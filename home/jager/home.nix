@@ -1,7 +1,7 @@
 {
   home = {
-    username = "raexera";
-    homeDirectory = "/home/raexera";
+    username = "jager";
+    homeDirectory = "/home/jager";
     extraOutputsToInstall = ["doc" "devdoc"];
 
     # This value determines the Home Manager release that your

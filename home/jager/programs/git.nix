@@ -7,8 +7,8 @@
     enable = true;
     package = pkgs.gitFull;
 
-    userName = "raexera";
-    userEmail = "raexera@gmail.com";
+    userName = "jager";
+    userEmail = "jj4v3l@gmail.com";
 
     signing = {
       key = config.programs.gpg.settings.default-key;

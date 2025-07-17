@@ -24,7 +24,7 @@ in {
 
     # Per-user home-manager configuration
     users = {
-      raexera = import ./raexera;
+      jager = import ./jager;
     };
 
     # Extra modules added to all users

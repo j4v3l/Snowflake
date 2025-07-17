@@ -1,5 +1,5 @@
 {
-  # https://github.com/raexera/yuki
+  # https://github.com/jager/yuki
   description = "Yuki: NixOS and Home Manager Flake";
 
   outputs = inputs:

@@ -2,7 +2,7 @@
   programs.firefox = {
     enable = true;
 
-    profiles.raexera = {
+    profiles.jager = {
       settings = {
         "browser.tabs.inTitlebar" = 0;
         "browser.urlbar.trimHttps" = true;

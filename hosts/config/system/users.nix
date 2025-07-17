@@ -1,5 +1,5 @@
 {
-  users.users.raexera = {
+  users.users.jager = {
     isNormalUser = true;
     uid = 1000;
     extraGroups = [
