@@ -181,7 +181,7 @@ detect_gpu() {
     
     GPU_VENDORS=()
     
-    # Try lspci first (with timeout to prevent hanging)
+    # Try lspci first (most reliable method)
     if command -v lspci &> /dev/null; then
         local lspci_output
         if lspci_output=$(timeout 10 lspci 2>/dev/null); then
@@ -199,50 +199,56 @@ detect_gpu() {
                 GPU_VENDORS+=("intel")
                 log "Detected Intel GPU"
             fi
+            
+            # If lspci worked, we're done - don't try other methods
+            if [[ ${#GPU_VENDORS[@]} -gt 0 ]]; then
+                log "GPU detection completed via lspci"
+                return 0
+            fi
         else
-            warn "lspci command timed out or failed"
+            warn "lspci command timed out or failed, trying alternative methods"
         fi
-    # Fallback to DRM detection (safer for VMs)
-    elif [[ -d /sys/class/drm ]]; then
-        log "Using DRM detection for GPU..."
-        local drm_count=0
+    fi
+    
+    # Only check for NVIDIA driver if lspci didn't work
+    if [[ -d /proc/driver/nvidia ]]; then
+        GPU_VENDORS+=("nvidia")
+        log "Detected NVIDIA GPU (driver present)"
+        return 0
+    fi
+    
+    # Last resort: very safe DRM detection (skip entirely in VMs if problematic)
+    if [[ -d /sys/class/drm ]] && [[ "${SKIP_DRM_DETECTION:-}" != "1" ]]; then
+        log "Attempting safe DRM detection (set SKIP_DRM_DETECTION=1 to skip)..."
         
-        # Use a more robust approach for VMs
-        if ls /sys/class/drm/card* >/dev/null 2>&1; then
-            for drm in /sys/class/drm/card*; do
-                # Check if this is a real card file
-                if [[ -e "$drm" && -d "$drm" ]]; then
-                    # Limit to first 5 DRM devices to prevent memory issues
-                    if [[ $drm_count -ge 5 ]]; then
-                        break
-                    fi
-                    
-                    if [[ -f "$drm/device/vendor" ]]; then
-                        local vendor=$(cat "$drm/device/vendor" 2>/dev/null || echo "")
+        # Use find with limits to be extra safe
+        local drm_files
+        if drm_files=$(find /sys/class/drm -maxdepth 1 -name "card[0-9]*" -type d 2>/dev/null | head -3); then
+            local drm_count=0
+            
+            while IFS= read -r drm && [[ $drm_count -lt 3 ]]; do
+                [[ -z "$drm" ]] && continue
+                
+                if [[ -f "$drm/device/vendor" ]]; then
+                    local vendor
+                    if vendor=$(timeout 2 cat "$drm/device/vendor" 2>/dev/null); then
                         case "$vendor" in
                             "0x10de") GPU_VENDORS+=("nvidia"); log "Detected NVIDIA GPU (via DRM)" ;;
                             "0x1002") GPU_VENDORS+=("amd"); log "Detected AMD GPU (via DRM)" ;;
                             "0x8086") GPU_VENDORS+=("intel"); log "Detected Intel GPU (via DRM)" ;;
                         esac
                     fi
-                    ((drm_count++))
                 fi
-            done
-        else
-            log "No DRM cards found in /sys/class/drm"
+                ((drm_count++))
+            done <<< "$drm_files"
         fi
-    # Check for NVIDIA driver
-    elif [[ -d /proc/driver/nvidia ]]; then
-        GPU_VENDORS+=("nvidia")
-        log "Detected NVIDIA GPU (driver present)"
     fi
     
-    # Remove duplicates efficiently
+    # Remove duplicates
     if [[ ${#GPU_VENDORS[@]} -gt 0 ]]; then
         readarray -t GPU_VENDORS < <(printf '%s\n' "${GPU_VENDORS[@]}" | sort -u)
-    fi
-    
-    if [[ ${#GPU_VENDORS[@]} -eq 0 ]]; then
+        log "Final GPU detection: ${GPU_VENDORS[*]}"
+    else
         warn "No supported GPU detected (common in VMs)"
         log "This is normal for virtual machines and will use minimal configuration"
     fi
@@ -740,6 +746,7 @@ show_usage() {
     echo "  SKIP_NIXOS_CHECK=1     - Skip NixOS installer environment check"
     echo "  SKIP_INTERNET_CHECK=1  - Skip internet connectivity check"
     echo "  SKIP_CONFIRMATION=1    - Skip installation confirmation prompt"
+    echo "  SKIP_DRM_DETECTION=1   - Skip DRM GPU detection (useful for VMs)"
     echo "  DEBUG=1                - Enable debug mode with verbose output"
     echo
     echo "Examples:"
