@@ -29,6 +29,7 @@ echo -e "${GREEN}✓ INSTALLER CREATED${NC}"
 echo "  • Single script installer: ${YELLOW}./install.sh${NC}"
 echo "  • Hardware detection: ${YELLOW}./hardware-detect.sh${NC}"
 echo "  • Test suite: ${YELLOW}./test-installer.sh${NC}"
+echo "  • Memory monitor: ${YELLOW}./memory-monitor.sh${NC}"
 echo "  • Documentation: ${YELLOW}INSTALL.md${NC}"
 echo
 
@@ -39,6 +40,8 @@ echo "  • Dynamic disk partitioning with BTRFS + compression"
 echo "  • Generated hardware-specific configurations"
 echo "  • Support for Intel/AMD CPUs and NVIDIA/AMD/Intel GPUs"
 echo "  • UEFI boot with secure partitioning scheme"
+echo "  • Memory optimization and OOM prevention"
+echo "  • Timeout protection for hardware detection"
 echo
 
 echo -e "${BLUE}USAGE:${NC}"
@@ -60,11 +63,15 @@ echo
 echo "  ${YELLOW}# Hardware detection only${NC}"
 echo "  ./hardware-detect.sh all"
 echo
-echo "  ${YELLOW}# Test installer validity${NC}"
-echo "  ./test-installer.sh"
-echo
-
-echo -e "${BLUE}DISK LAYOUT:${NC}"
+  echo "  ${YELLOW}# Test installer validity${NC}"
+  echo "  ./test-installer.sh"
+  echo
+  echo "  ${YELLOW}# Check system readiness${NC}"
+  echo "  ./memory-monitor.sh check"
+  echo
+  echo "  ${YELLOW}# Monitor system resources${NC}"
+  echo "  ./memory-monitor.sh monitor"
+  echoecho -e "${BLUE}DISK LAYOUT:${NC}"
 echo "  • EFI Boot: 1GB (FAT32)"
 echo "  • Root: Remaining space (BTRFS with compression)"
 echo "    ├── / (root subvolume)"
