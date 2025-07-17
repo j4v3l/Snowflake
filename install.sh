@@ -389,29 +389,39 @@ $(printf '        "%s"\n' "${initrd_modules[@]}")
       kernelModules = [];
     };
     kernelModules = [$(printf '"%s" ' "${kernel_modules[@]}")];
-    kernelParams = ["nowatchdog"];
+EOF
+
+    # Build kernel parameters array
+    local kernel_params=("nowatchdog")
+    
+    # Add CPU-specific kernel parameters
+    if [[ "$CPU_VENDOR" == "intel" ]]; then
+        kernel_params+=("intel_pstate=active")
+    elif [[ "$CPU_VENDOR" == "amd" ]]; then
+        kernel_params+=("amd_pstate=active")
+    fi
+    
+    # Add kernel parameters as a single line
+    cat >> "$config_file" << EOF
+    kernelParams = [$(printf '"%s" ' "${kernel_params[@]}")];
   };
 
   # Enable firmware loading
   hardware.enableRedistributableFirmware = lib.mkDefault true;
-  
-  # Enable microcode updates
 EOF
 
-    # Add CPU-specific optimizations
+    # Add CPU-specific microcode updates
     if [[ "$CPU_VENDOR" == "intel" ]]; then
         cat >> "$config_file" << 'EOF'
-  hardware.cpu.intel.updateMicrocode = lib.mkDefault true;
   
-  # Intel-specific kernel parameters
-  boot.kernelParams = lib.mkAfter ["intel_pstate=active"];
+  # Intel CPU microcode updates
+  hardware.cpu.intel.updateMicrocode = lib.mkDefault true;
 EOF
     elif [[ "$CPU_VENDOR" == "amd" ]]; then
         cat >> "$config_file" << 'EOF'
-  hardware.cpu.amd.updateMicrocode = lib.mkDefault true;
   
-  # AMD-specific kernel parameters  
-  boot.kernelParams = lib.mkAfter ["amd_pstate=active"];
+  # AMD CPU microcode updates
+  hardware.cpu.amd.updateMicrocode = lib.mkDefault true;
 EOF
     fi
 
