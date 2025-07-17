@@ -578,6 +578,28 @@ setup_disks() {
     # Run disko with timeout and better error handling
     if timeout 300 sudo nix --experimental-features "nix-command flakes" run github:nix-community/disko -- --mode disko --flake ".#$hostname" 2>&1; then
         success "Disk partitioning completed successfully"
+        
+        # Verify that the target disk is properly mounted
+        log "Verifying disk mounts..."
+        if mountpoint -q /mnt; then
+            log "Root filesystem mounted at /mnt"
+            # Show mount info for verification
+            local mount_device=$(findmnt -n -o SOURCE /mnt)
+            log "Root mount source: $mount_device"
+            
+            # Check available space on target disk
+            local available_space=$(df -h /mnt | awk 'NR==2 {print $4}')
+            log "Available space on target: $available_space"
+        else
+            error "Target disk not mounted at /mnt after disko setup. Check disko configuration."
+        fi
+        
+        # Verify boot partition is mounted
+        if mountpoint -q /mnt/boot; then
+            log "Boot partition mounted at /mnt/boot"
+        else
+            warn "Boot partition not mounted at /mnt/boot (this may be normal for some configurations)"
+        fi
     else
         local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
@@ -599,20 +621,61 @@ install_nixos() {
     
     log "Installing NixOS configuration for $hostname..."
     
+    # Verify we have a properly mounted target
+    if ! mountpoint -q /mnt; then
+        error "Target filesystem not mounted at /mnt. Run disk setup first."
+    fi
+    
+    # Check available space on target disk (not the live environment)
+    local available_space_kb=$(df --output=avail /mnt | tail -1)
+    local available_space_mb=$((available_space_kb / 1024))
+    log "Available space on target disk: ${available_space_mb}MB"
+    
+    if [[ $available_space_mb -lt 2048 ]]; then  # Less than 2GB
+        error "Insufficient space on target disk. Need at least 2GB, found ${available_space_mb}MB"
+    fi
+    
     # Check memory before installation
     local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
     log "Available memory before NixOS installation: $(( available_mem / 1024 ))MB"
     
     cd "$FLAKE_DIR" || error "Failed to change to flake directory: $FLAKE_DIR"
     
-    # Install NixOS with the flake configuration
-    log "Running: sudo nixos-install --flake \".#$hostname\" --no-root-passwd"
+    # Install NixOS with the flake configuration to the mounted target
+    log "Running: sudo nixos-install --root /mnt --flake \".#$hostname\" --no-root-passwd"
     
-    if ! sudo nixos-install --flake ".#$hostname" --no-root-passwd 2>&1; then
+    if ! sudo nixos-install --root /mnt --flake ".#$hostname" --no-root-passwd 2>&1; then
         error "NixOS installation failed. Check the above output for specific errors."
     fi
     
     success "NixOS installation completed"
+}
+
+# Rebuild NixOS configuration (for already installed systems)
+rebuild_nixos() {
+    local hostname="$1"
+    
+    log "Rebuilding NixOS configuration for $hostname..."
+    
+    # Check available space on root filesystem
+    local available_space_kb=$(df --output=avail / | tail -1)
+    local available_space_mb=$((available_space_kb / 1024))
+    log "Available space on root filesystem: ${available_space_mb}MB"
+    
+    if [[ $available_space_mb -lt 1024 ]]; then  # Less than 1GB
+        warn "Low disk space detected: ${available_space_mb}MB. Rebuild may fail."
+    fi
+    
+    cd "$FLAKE_DIR" || error "Failed to change to flake directory: $FLAKE_DIR"
+    
+    # Rebuild and switch to the new configuration
+    log "Running: sudo nixos-rebuild switch --flake \".#$hostname\""
+    
+    if ! sudo nixos-rebuild switch --flake ".#$hostname" 2>&1; then
+        error "NixOS configuration rebuild failed. Check the above output for specific errors."
+    fi
+    
+    success "NixOS configuration rebuild completed"
 }
 
 # Set up user password
@@ -658,6 +721,14 @@ main() {
     log "Starting Snowflake NixOS installation..."
     log "Hostname: $hostname"
     
+    # Check if we're in reinstall mode (running on already installed system)
+    local reinstall_mode="${REINSTALL_MODE:-0}"
+    if [[ "$reinstall_mode" == "1" ]] || [[ -f /etc/nixos/configuration.nix ]] && [[ ! -f /etc/NIXOS ]]; then
+        log "Detected already installed system or REINSTALL_MODE=1"
+        log "Running in configuration rebuild mode (no disk partitioning)"
+        reinstall_mode="1"
+    fi
+    
     # Enable debug mode if requested
     if [[ "${DEBUG:-}" == "1" ]]; then
         log "Debug mode enabled"
@@ -673,8 +744,13 @@ main() {
     log "Step 3: Validating hostname..."
     validate_hostname "$hostname"
     
-    log "Step 4: Detecting storage devices..."
-    detect_storage "$target_disk"
+    if [[ "$reinstall_mode" != "1" ]]; then
+        log "Step 4: Detecting storage devices..."
+        detect_storage "$target_disk"
+    else
+        log "Step 4: Skipping storage detection (reinstall mode)"
+        TARGET_DISK="${target_disk:-/dev/sda}"  # Dummy value for config generation
+    fi
     
     log "Step 5: Detecting CPU..."
     detect_cpu
@@ -685,11 +761,18 @@ main() {
     log "Hardware summary:"
     log "  CPU: $CPU_VENDOR"
     log "  GPU: ${GPU_VENDORS[*]:-none}"
-    log "  Target disk: $TARGET_DISK"
+    if [[ "$reinstall_mode" != "1" ]]; then
+        log "  Target disk: $TARGET_DISK"
+    fi
     
-    # Confirm installation
+    # Confirm installation/rebuild
     echo
-    warn "This will COMPLETELY ERASE $TARGET_DISK and install NixOS!"
+    if [[ "$reinstall_mode" == "1" ]]; then
+        warn "This will rebuild the NixOS configuration and switch to it!"
+    else
+        warn "This will COMPLETELY ERASE $TARGET_DISK and install NixOS!"
+    fi
+    
     if [[ "${SKIP_CONFIRMATION:-}" != "1" ]]; then
         read -p "Continue? (y/N): " -n 1 -r
         echo
@@ -716,19 +799,28 @@ main() {
     log "Step 11: Updating flake configuration..."
     update_flake_config "$hostname"
     
-    # Install system
-    log "Step 12: Setting up disks..."
-    setup_disks "$hostname"
-    
-    log "Step 13: Installing NixOS..."
-    install_nixos "$hostname"
-    
-    log "Step 14: Setting up user..."
-    setup_user
-    
-    success "Installation completed successfully!"
-    log "The system will be available after reboot."
-    log "Remove the installation media and reboot to start using your new NixOS system."
+    # Install or rebuild system
+    if [[ "$reinstall_mode" == "1" ]]; then
+        log "Step 12: Rebuilding NixOS configuration..."
+        rebuild_nixos "$hostname"
+        
+        success "Configuration rebuild completed successfully!"
+        log "The new configuration is now active."
+        log "Reboot to ensure all changes take effect."
+    else
+        log "Step 12: Setting up disks..."
+        setup_disks "$hostname"
+        
+        log "Step 13: Installing NixOS..."
+        install_nixos "$hostname"
+        
+        log "Step 14: Setting up user..."
+        setup_user
+        
+        success "Installation completed successfully!"
+        log "The system will be available after reboot."
+        log "Remove the installation media and reboot to start using your new NixOS system."
+    fi
 }
 
 # Handle script arguments
@@ -747,6 +839,7 @@ show_usage() {
     echo "  SKIP_INTERNET_CHECK=1  - Skip internet connectivity check"
     echo "  SKIP_CONFIRMATION=1    - Skip installation confirmation prompt"
     echo "  SKIP_DRM_DETECTION=1   - Skip DRM GPU detection (useful for VMs)"
+    echo "  REINSTALL_MODE=1       - Run on already installed system (rebuilds config)"
     echo "  DEBUG=1                - Enable debug mode with verbose output"
     echo
     echo "Examples:"
@@ -756,6 +849,8 @@ show_usage() {
     echo "  FLAKE_DIR=/path/to/flake $0 # Custom flake location"
     echo "  DEBUG=1 $0                  # Enable debug mode"
     echo "  SKIP_CONFIRMATION=1 $0      # Skip confirmation prompt"
+    echo "  REINSTALL_MODE=1 $0         # Run on already installed system"
+    echo "  SKIP_DRM_DETECTION=1 $0     # Skip GPU detection for VMs"
     echo
 }
 
