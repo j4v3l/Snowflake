@@ -229,6 +229,9 @@ detect_gpu() {
         log "Using DRM detection for GPU..."
         local drm_count=0
         for drm in /sys/class/drm/card*; do
+            # Check if glob didn't match (no cards found)
+            [[ ! -e "$drm" ]] && break
+            
             # Limit to first 5 DRM devices to prevent memory issues
             if [[ $drm_count -ge 5 ]]; then
                 break
