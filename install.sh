@@ -14,7 +14,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-FLAKE_DIR="/home/nixos/Snowflake"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FLAKE_DIR="${FLAKE_DIR:-$SCRIPT_DIR}"
 DEFAULT_HOSTNAME="yuki"
 DEFAULT_DISK="/dev/nvme0n1"
 
@@ -47,19 +48,25 @@ check_root() {
 check_prerequisites() {
     log "Checking prerequisites..."
     
-    # Check if we're in NixOS installer environment
-    if [[ ! -f /etc/NIXOS ]]; then
-        error "This script must be run from a NixOS installer environment"
+    # Check if we're in NixOS installer environment (skip in development)
+    if [[ ! -f /etc/NIXOS ]] && [[ "${SKIP_NIXOS_CHECK:-}" != "1" ]]; then
+        warn "Not running in NixOS installer environment (set SKIP_NIXOS_CHECK=1 to override)"
     fi
     
-    # Check if flake directory exists
+    # Check if flake directory exists and has required files
     if [[ ! -d "$FLAKE_DIR" ]]; then
         error "Flake directory not found: $FLAKE_DIR"
     fi
     
-    # Check if we have internet connectivity
-    if ! ping -c 1 nixos.org &> /dev/null; then
-        error "No internet connection. Internet is required for installation."
+    if [[ ! -f "$FLAKE_DIR/flake.nix" ]]; then
+        error "flake.nix not found in: $FLAKE_DIR"
+    fi
+    
+    log "Using flake directory: $FLAKE_DIR"
+    
+    # Check if we have internet connectivity (skip in development)
+    if [[ "${SKIP_INTERNET_CHECK:-}" != "1" ]] && ! ping -c 1 nixos.org &> /dev/null; then
+        warn "No internet connection detected (set SKIP_INTERNET_CHECK=1 to override)"
     fi
     
     # Check if nix command is available
@@ -591,6 +598,36 @@ main() {
 }
 
 # Handle script arguments
+show_usage() {
+    echo "Snowflake NixOS Installer"
+    echo
+    echo "Usage: $0 [hostname] [target_disk]"
+    echo
+    echo "Arguments:"
+    echo "  hostname     - Hostname for the new system (default: $DEFAULT_HOSTNAME)"
+    echo "  target_disk  - Target disk for installation (auto-detected if not specified)"
+    echo
+    echo "Environment Variables:"
+    echo "  FLAKE_DIR              - Path to flake directory (default: script directory)"
+    echo "  SKIP_NIXOS_CHECK=1     - Skip NixOS installer environment check"
+    echo "  SKIP_INTERNET_CHECK=1  - Skip internet connectivity check"
+    echo
+    echo "Examples:"
+    echo "  $0                           # Use defaults"
+    echo "  $0 myhostname               # Custom hostname"
+    echo "  $0 myhostname /dev/sda      # Custom hostname and disk"
+    echo "  FLAKE_DIR=/path/to/flake $0 # Custom flake location"
+    echo
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
+    case "${1:-}" in
+        -h|--help|help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            main "$@"
+            ;;
+    esac
 fi

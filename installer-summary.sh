@@ -51,6 +51,12 @@ echo
 echo "  ${YELLOW}# Custom hostname and disk${NC}"
 echo "  ./install.sh myhostname /dev/nvme0n1"
 echo
+echo "  ${YELLOW}# Custom flake location${NC}"
+echo "  FLAKE_DIR=/path/to/flake ./install.sh"
+echo
+echo "  ${YELLOW}# Development/testing mode${NC}"
+echo "  SKIP_NIXOS_CHECK=1 SKIP_INTERNET_CHECK=1 ./install.sh"
+echo
 echo "  ${YELLOW}# Hardware detection only${NC}"
 echo "  ./hardware-detect.sh all"
 echo
