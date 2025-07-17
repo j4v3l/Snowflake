@@ -6,6 +6,28 @@
 
 set -euo pipefail
 
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+    
+    # Clean up temporary files
+    find /tmp -name "*.tmp" -user "$(whoami)" -mmin +5 -delete 2>/dev/null || true
+    
+    # If there was an error, show memory info
+    if [[ $exit_code -ne 0 ]]; then
+        echo -e "\n${RED}[ERROR]${NC} Installation failed with exit code $exit_code"
+        if [[ -f /proc/meminfo ]]; then
+            local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+            echo -e "${YELLOW}[DEBUG]${NC} Available memory: $(( available_mem / 1024 ))MB"
+        fi
+    fi
+    
+    exit $exit_code
+}
+
+# Set up cleanup trap
+trap cleanup EXIT INT TERM
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -48,6 +70,18 @@ check_root() {
 check_prerequisites() {
     log "Checking prerequisites..."
     
+    # Check available memory
+    local total_mem=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+    local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+    
+    log "System memory: Total $(( total_mem / 1024 ))MB, Available $(( available_mem / 1024 ))MB"
+    
+    if [[ $available_mem -lt 256000 ]]; then  # Less than 256MB
+        error "Insufficient memory for installation. Need at least 256MB available."
+    elif [[ $available_mem -lt 512000 ]]; then  # Less than 512MB
+        warn "Low memory detected. Installation may be slow or fail."
+    fi
+    
     # Check if we're in NixOS installer environment (skip in development)
     if [[ ! -f /etc/NIXOS ]] && [[ "${SKIP_NIXOS_CHECK:-}" != "1" ]]; then
         warn "Not running in NixOS installer environment (set SKIP_NIXOS_CHECK=1 to override)"
@@ -65,7 +99,7 @@ check_prerequisites() {
     log "Using flake directory: $FLAKE_DIR"
     
     # Check if we have internet connectivity (skip in development)
-    if [[ "${SKIP_INTERNET_CHECK:-}" != "1" ]] && ! ping -c 1 nixos.org &> /dev/null; then
+    if [[ "${SKIP_INTERNET_CHECK:-}" != "1" ]] && ! timeout 5 ping -c 1 nixos.org &> /dev/null; then
         warn "No internet connection detected (set SKIP_INTERNET_CHECK=1 to override)"
     fi
     
@@ -81,13 +115,21 @@ check_prerequisites() {
 detect_storage() {
     log "Detecting storage devices..."
     
-    # List all block devices
-    lsblk -d -n -o NAME,SIZE,TYPE | grep -E "(disk|nvme)" | while read -r name size type; do
-        echo "  /dev/${name} (${size})"
-    done
+    # Check available memory first to prevent OOM
+    local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+    if [[ $available_mem -lt 512000 ]]; then  # Less than 512MB
+        warn "Low memory detected (${available_mem}KB available). Installation may fail."
+    fi
+    
+    # List all block devices (with limited output to save memory)
+    if command -v lsblk &> /dev/null; then
+        lsblk -d -n -o NAME,SIZE,TYPE | grep -E "(disk|nvme)" | head -10 | while read -r name size type; do
+            echo "  /dev/${name} (${size})"
+        done
+    fi
     
     # Auto-select the largest available disk
-    LARGEST_DISK=$(lsblk -d -n -o NAME,SIZE -b | grep -E "(nvme|sd)" | sort -k2 -nr | head -1 | awk '{print "/dev/" $1}')
+    LARGEST_DISK=$(lsblk -d -n -o NAME,SIZE -b 2>/dev/null | grep -E "(nvme|sd)" | sort -k2 -nr | head -1 | awk '{print "/dev/" $1}')
     
     if [[ -n "${1:-}" ]]; then
         TARGET_DISK="$1"
@@ -139,26 +181,37 @@ detect_gpu() {
     
     GPU_VENDORS=()
     
-    # Try lspci first
+    # Try lspci first (with timeout to prevent hanging)
     if command -v lspci &> /dev/null; then
-        if lspci | grep -qi nvidia; then
-            GPU_VENDORS+=("nvidia")
-            log "Detected NVIDIA GPU"
-        fi
-        
-        if lspci | grep -qi "amd\|radeon"; then
-            GPU_VENDORS+=("amd")
-            log "Detected AMD GPU"
-        fi
-        
-        if lspci | grep -qi intel; then
-            GPU_VENDORS+=("intel")
-            log "Detected Intel GPU"
+        local lspci_output
+        if lspci_output=$(timeout 10 lspci 2>/dev/null); then
+            if echo "$lspci_output" | grep -qi nvidia; then
+                GPU_VENDORS+=("nvidia")
+                log "Detected NVIDIA GPU"
+            fi
+            
+            if echo "$lspci_output" | grep -qi "amd\|radeon"; then
+                GPU_VENDORS+=("amd")
+                log "Detected AMD GPU"
+            fi
+            
+            if echo "$lspci_output" | grep -qi intel; then
+                GPU_VENDORS+=("intel")
+                log "Detected Intel GPU"
+            fi
+        else
+            warn "lspci command timed out or failed"
         fi
     # Fallback to DRM detection
     elif [[ -d /sys/class/drm ]]; then
         log "Using DRM detection for GPU..."
+        local drm_count=0
         for drm in /sys/class/drm/card*; do
+            # Limit to first 5 DRM devices to prevent memory issues
+            if [[ $drm_count -ge 5 ]]; then
+                break
+            fi
+            
             if [[ -f "$drm/device/vendor" ]]; then
                 local vendor=$(cat "$drm/device/vendor" 2>/dev/null || echo "")
                 case "$vendor" in
@@ -167,6 +220,7 @@ detect_gpu() {
                     "0x8086") GPU_VENDORS+=("intel"); log "Detected Intel GPU (via DRM)" ;;
                 esac
             fi
+            ((drm_count++))
         done
     # Check for NVIDIA driver
     elif [[ -d /proc/driver/nvidia ]]; then
@@ -174,8 +228,10 @@ detect_gpu() {
         log "Detected NVIDIA GPU (driver present)"
     fi
     
-    # Remove duplicates
-    GPU_VENDORS=($(printf "%s\n" "${GPU_VENDORS[@]}" | sort -u))
+    # Remove duplicates efficiently
+    if [[ ${#GPU_VENDORS[@]} -gt 0 ]]; then
+        readarray -t GPU_VENDORS < <(printf '%s\n' "${GPU_VENDORS[@]}" | sort -u)
+    fi
     
     if [[ ${#GPU_VENDORS[@]} -eq 0 ]]; then
         warn "No supported GPU detected"
@@ -255,24 +311,39 @@ generate_hardware_config() {
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$config_file")"
     
-    # Try to use nixos-generate-config if available
+    # Try to use nixos-generate-config if available (with timeout and memory limit)
     if command -v nixos-generate-config &> /dev/null; then
         log "Using nixos-generate-config for accurate hardware detection"
-        nixos-generate-config --show-hardware-config > "$config_file.tmp"
         
-        # Add our custom header and any modifications
-        cat > "$config_file" << EOF
+        # Run with timeout and redirect to avoid memory issues
+        if timeout 30 nixos-generate-config --show-hardware-config > "$config_file.tmp" 2>/dev/null; then
+            # Add our custom header and any modifications
+            cat > "$config_file" << EOF
 # Generated hardware configuration for $hostname
 # Generated on $(date)
 {lib, ...}: {
 EOF
-        # Extract the main configuration from nixos-generate-config output
-        grep -v "^{" "$config_file.tmp" | grep -v "^}" | sed 's/^  //' >> "$config_file"
-        echo "}" >> "$config_file"
-        rm -f "$config_file.tmp"
+            # Extract the main configuration from nixos-generate-config output
+            grep -v "^{" "$config_file.tmp" | grep -v "^}" | sed 's/^  //' >> "$config_file" 2>/dev/null || true
+            echo "}" >> "$config_file"
+            rm -f "$config_file.tmp"
+        else
+            warn "nixos-generate-config failed or timed out, using manual configuration"
+            generate_manual_hardware_config "$hostname" "$config_file"
+        fi
     else
-        # Generate basic hardware config manually
-        cat > "$config_file" << EOF
+        generate_manual_hardware_config "$hostname" "$config_file"
+    fi
+    
+    success "Generated hardware configuration: $config_file"
+}
+
+# Generate manual hardware configuration (fallback)
+generate_manual_hardware_config() {
+    local hostname="$1"
+    local config_file="$2"
+    
+    cat > "$config_file" << EOF
 {lib, ...}: {
   boot = {
     initrd = {
@@ -294,27 +365,16 @@ EOF
   hardware.enableRedistributableFirmware = lib.mkDefault true;
 EOF
 
-        # Add hardware-specific configuration
-        if [[ "$CPU_VENDOR" == "intel" ]]; then
-            echo "  # Intel CPU optimizations" >> "$config_file"
-            echo '  boot.kernelParams = ["i915.force_probe=*"];' >> "$config_file"
-        elif [[ "$CPU_VENDOR" == "amd" ]]; then
-            echo "  # AMD CPU optimizations" >> "$config_file"
-            echo '  boot.kernelParams = ["amd_pstate=active"];' >> "$config_file"
-        fi
-
-        # Add DPI setting if we can detect display
-        if command -v xrandr &> /dev/null && xrandr &> /dev/null; then
-            local dpi=$(xrandr | grep -oP '\d+x\d+' | head -1 | awk -F'x' '{print int(sqrt($1*$1 + $2*$2) / 14)}')
-            if [[ -n "$dpi" && "$dpi" -gt 0 ]]; then
-                echo "  services.xserver.dpi = $dpi;" >> "$config_file"
-            fi
-        fi
-        
-        echo "}" >> "$config_file"
+    # Add hardware-specific configuration
+    if [[ "$CPU_VENDOR" == "intel" ]]; then
+        echo "  # Intel CPU optimizations" >> "$config_file"
+        echo '  boot.kernelParams = ["i915.force_probe=*"];' >> "$config_file"
+    elif [[ "$CPU_VENDOR" == "amd" ]]; then
+        echo "  # AMD CPU optimizations" >> "$config_file"
+        echo '  boot.kernelParams = ["amd_pstate=active"];' >> "$config_file"
     fi
-    
-    success "Generated hardware configuration: $config_file"
+
+    echo "}" >> "$config_file"
 }
 
 # Create or update host configuration
@@ -559,9 +619,6 @@ main() {
     check_root
     check_prerequisites
     validate_hostname "$hostname"
-    detect_storage "$target_disk"
-    detect_cpu
-    detect_gpu
     detect_storage "$target_disk"
     detect_cpu
     detect_gpu
