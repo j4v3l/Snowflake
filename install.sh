@@ -327,29 +327,10 @@ generate_hardware_config() {
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$config_file")"
     
-    # Try to use nixos-generate-config if available (with timeout and memory limit)
-    if command -v nixos-generate-config &> /dev/null; then
-        log "Using nixos-generate-config for accurate hardware detection"
-        
-        # Run with timeout and redirect to avoid memory issues
-        if timeout 30 nixos-generate-config --show-hardware-config > "$config_file.tmp" 2>/dev/null; then
-            # Add our custom header and any modifications
-            cat > "$config_file" << EOF
-# Generated hardware configuration for $hostname
-# Generated on $(date)
-{lib, ...}: {
-EOF
-            # Extract the main configuration from nixos-generate-config output
-            grep -v "^{" "$config_file.tmp" | grep -v "^}" | sed 's/^  //' >> "$config_file" 2>/dev/null || true
-            echo "}" >> "$config_file"
-            rm -f "$config_file.tmp"
-        else
-            warn "nixos-generate-config failed or timed out, using manual configuration"
-            generate_manual_hardware_config "$hostname" "$config_file"
-        fi
-    else
-        generate_manual_hardware_config "$hostname" "$config_file"
-    fi
+    # For disko-based installations, we should NOT use nixos-generate-config
+    # because it will conflict with disko's filesystem definitions
+    log "Using manual hardware configuration (compatible with disko)"
+    generate_manual_hardware_config "$hostname" "$config_file"
     
     success "Generated hardware configuration: $config_file"
 }
@@ -359,11 +340,14 @@ generate_manual_hardware_config() {
     local hostname="$1"
     local config_file="$2"
     
-    cat > "$config_file" << EOF
-{lib, ...}: {
-  boot = {
-    initrd = {
-      availableKernelModules = [
+    log "Generating manual hardware configuration compatible with disko"
+    
+    # Detect hardware modules from the running system
+    local kernel_modules=()
+    local initrd_modules=()
+    
+    # Common storage and USB modules
+    initrd_modules=(
         "nvme"
         "sd_mod"
         "xhci_pci"
@@ -371,26 +355,79 @@ generate_manual_hardware_config() {
         "usb_storage"
         "usbhid"
         "sr_mod"
+    )
+    
+    # Add SATA modules if detected
+    if lspci 2>/dev/null | grep -qi "sata\|ahci"; then
+        initrd_modules+=("sata_nv" "sata_via" "sata_sis" "sata_uli")
+    fi
+    
+    # Add virtio modules for VMs
+    if lspci 2>/dev/null | grep -qi "virtio\|qemu"; then
+        initrd_modules+=("virtio_pci" "virtio_blk" "virtio_scsi" "virtio_net")
+        log "Detected virtualized environment, adding virtio modules"
+    fi
+    
+    # CPU-specific modules
+    if [[ "$CPU_VENDOR" == "intel" ]]; then
+        kernel_modules+=("kvm-intel")
+    elif [[ "$CPU_VENDOR" == "amd" ]]; then
+        kernel_modules+=("kvm-amd")
+    fi
+    
+    # Generate the configuration
+    cat > "$config_file" << EOF
+# Generated hardware configuration for $hostname
+# Generated on $(date)
+# This configuration is compatible with disko disk management
+{lib, ...}: {
+  boot = {
+    initrd = {
+      availableKernelModules = [
+$(printf '        "%s"\n' "${initrd_modules[@]}")
       ];
       kernelModules = [];
     };
-    kernelModules = ["kvm-$CPU_VENDOR"];
+    kernelModules = [$(printf '"%s" ' "${kernel_modules[@]}")];
     kernelParams = ["nowatchdog"];
   };
 
+  # Enable firmware loading
   hardware.enableRedistributableFirmware = lib.mkDefault true;
+  
+  # Enable microcode updates
 EOF
 
-    # Add hardware-specific configuration
+    # Add CPU-specific optimizations
     if [[ "$CPU_VENDOR" == "intel" ]]; then
-        echo "  # Intel CPU optimizations" >> "$config_file"
-        echo '  boot.kernelParams = ["i915.force_probe=*"];' >> "$config_file"
+        cat >> "$config_file" << 'EOF'
+  hardware.cpu.intel.updateMicrocode = lib.mkDefault true;
+  
+  # Intel-specific kernel parameters
+  boot.kernelParams = lib.mkAfter ["intel_pstate=active"];
+EOF
     elif [[ "$CPU_VENDOR" == "amd" ]]; then
-        echo "  # AMD CPU optimizations" >> "$config_file"
-        echo '  boot.kernelParams = ["amd_pstate=active"];' >> "$config_file"
+        cat >> "$config_file" << 'EOF'
+  hardware.cpu.amd.updateMicrocode = lib.mkDefault true;
+  
+  # AMD-specific kernel parameters  
+  boot.kernelParams = lib.mkAfter ["amd_pstate=active"];
+EOF
+    fi
+
+    # Add VM-specific optimizations
+    if lspci 2>/dev/null | grep -qi "virtio\|qemu\|vmware\|virtualbox"; then
+        cat >> "$config_file" << 'EOF'
+  
+  # Virtual machine optimizations
+  services.qemuGuest.enable = lib.mkDefault true;
+  services.spice-vdagentd.enable = lib.mkDefault true;
+EOF
     fi
 
     echo "}" >> "$config_file"
+    
+    log "Generated hardware configuration with ${#initrd_modules[@]} initrd modules and ${#kernel_modules[@]} kernel modules"
 }
 
 # Create or update host configuration
