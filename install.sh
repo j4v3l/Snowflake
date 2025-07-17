@@ -28,28 +28,6 @@ cleanup() {
 # Set up cleanup trap
 trap cleanup EXIT INT TERM
 
-# Cleanup function
-cleanup() {
-    local exit_code=$?
-    
-    # Clean up temporary files
-    find /tmp -name "*.tmp" -user "$(whoami)" -mmin +5 -delete 2>/dev/null || true
-    
-    # If there was an error, show memory info
-    if [[ $exit_code -ne 0 ]]; then
-        echo -e "\n${RED}[ERROR]${NC} Installation failed with exit code $exit_code"
-        if [[ -f /proc/meminfo ]]; then
-            local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
-            echo -e "${YELLOW}[DEBUG]${NC} Available memory: $(( available_mem / 1024 ))MB"
-        fi
-    fi
-    
-    exit $exit_code
-}
-
-# Set up cleanup trap
-trap cleanup EXIT INT TERM
-
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -224,29 +202,35 @@ detect_gpu() {
         else
             warn "lspci command timed out or failed"
         fi
-    # Fallback to DRM detection
+    # Fallback to DRM detection (safer for VMs)
     elif [[ -d /sys/class/drm ]]; then
         log "Using DRM detection for GPU..."
         local drm_count=0
-        for drm in /sys/class/drm/card*; do
-            # Check if glob didn't match (no cards found)
-            [[ ! -e "$drm" ]] && break
-            
-            # Limit to first 5 DRM devices to prevent memory issues
-            if [[ $drm_count -ge 5 ]]; then
-                break
-            fi
-            
-            if [[ -f "$drm/device/vendor" ]]; then
-                local vendor=$(cat "$drm/device/vendor" 2>/dev/null || echo "")
-                case "$vendor" in
-                    "0x10de") GPU_VENDORS+=("nvidia"); log "Detected NVIDIA GPU (via DRM)" ;;
-                    "0x1002") GPU_VENDORS+=("amd"); log "Detected AMD GPU (via DRM)" ;;
-                    "0x8086") GPU_VENDORS+=("intel"); log "Detected Intel GPU (via DRM)" ;;
-                esac
-            fi
-            ((drm_count++))
-        done
+        
+        # Use a more robust approach for VMs
+        if ls /sys/class/drm/card* >/dev/null 2>&1; then
+            for drm in /sys/class/drm/card*; do
+                # Check if this is a real card file
+                if [[ -e "$drm" && -d "$drm" ]]; then
+                    # Limit to first 5 DRM devices to prevent memory issues
+                    if [[ $drm_count -ge 5 ]]; then
+                        break
+                    fi
+                    
+                    if [[ -f "$drm/device/vendor" ]]; then
+                        local vendor=$(cat "$drm/device/vendor" 2>/dev/null || echo "")
+                        case "$vendor" in
+                            "0x10de") GPU_VENDORS+=("nvidia"); log "Detected NVIDIA GPU (via DRM)" ;;
+                            "0x1002") GPU_VENDORS+=("amd"); log "Detected AMD GPU (via DRM)" ;;
+                            "0x8086") GPU_VENDORS+=("intel"); log "Detected Intel GPU (via DRM)" ;;
+                        esac
+                    fi
+                    ((drm_count++))
+                fi
+            done
+        else
+            log "No DRM cards found in /sys/class/drm"
+        fi
     # Check for NVIDIA driver
     elif [[ -d /proc/driver/nvidia ]]; then
         GPU_VENDORS+=("nvidia")
@@ -259,7 +243,8 @@ detect_gpu() {
     fi
     
     if [[ ${#GPU_VENDORS[@]} -eq 0 ]]; then
-        warn "No supported GPU detected"
+        warn "No supported GPU detected (common in VMs)"
+        log "This is normal for virtual machines and will use minimal configuration"
     fi
 }
 
