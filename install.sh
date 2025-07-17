@@ -584,9 +584,19 @@ setup_disks() {
     # Format the disk using disko
     log "Partitioning and formatting $TARGET_DISK..."
     
-    # Run disko with error handling
-    if ! sudo nix --experimental-features "nix-command flakes" run github:nix-community/disko -- --mode disko --flake ".#$hostname" 2>&1; then
-        error "Disk setup failed. Check if disk $TARGET_DISK exists and is not in use."
+    # Run disko with timeout and better error handling
+    if timeout 300 sudo nix --experimental-features "nix-command flakes" run github:nix-community/disko -- --mode disko --flake ".#$hostname" 2>&1; then
+        success "Disk partitioning completed successfully"
+    else
+        local exit_code=$?
+        if [[ $exit_code -eq 124 ]]; then
+            error "Disk setup timed out after 5 minutes. The disk might be too slow or the network connection is poor."
+            error "Try running the installer again or use a faster disk."
+        else
+            error "Disk setup failed with exit code $exit_code. Check if disk $TARGET_DISK exists and is not in use."
+            error "Make sure the disk is not mounted and no other processes are using it."
+        fi
+        return 1
     fi
     
     success "Disk setup completed"
