@@ -522,7 +522,7 @@ EOF
             cat >> "$host_config" << 'EOF'
   
   # Disable systemd-boot in reinstall mode to avoid conflicts
-  boot.loader.systemd-boot.enable = false;
+  boot.loader.systemd-boot.enable = lib.mkForce false;
 EOF
         fi
 
@@ -588,7 +588,7 @@ EOF
             cat >> "$host_config" << 'EOF'
   
   # Disable systemd-boot in reinstall mode to avoid conflicts
-  boot.loader.systemd-boot.enable = false;
+  boot.loader.systemd-boot.enable = lib.mkForce false;
 EOF
         fi
 
