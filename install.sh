@@ -698,6 +698,39 @@ update_flake_config() {
     success "Updated flake configuration"
 }
 
+# Set up flake integration for existing system
+setup_flake_integration() {
+    local hostname="$1"
+    
+    log "Setting up flake integration for existing system..."
+    
+    # Create /etc/nixos directory if it doesn't exist
+    sudo mkdir -p /etc/nixos
+    
+    # Create or update /etc/nixos/flake.nix to point to our flake
+    sudo tee /etc/nixos/flake.nix > /dev/null << EOF
+{
+  description = "NixOS configuration using Snowflake flake";
+  
+  inputs = {
+    snowflake.url = "path:$FLAKE_DIR";
+  };
+  
+  outputs = { self, snowflake }: {
+    nixosConfigurations.$hostname = snowflake.nixosConfigurations.$hostname;
+  };
+}
+EOF
+    
+    # Ensure the flake.lock exists
+    if [[ ! -f /etc/nixos/flake.lock ]]; then
+        log "Initializing flake.lock in /etc/nixos..."
+        sudo nix flake lock /etc/nixos
+    fi
+    
+    success "Flake integration configured"
+}
+
 # Partition and format disks
 setup_disks() {
     local hostname="$1"
@@ -833,12 +866,35 @@ rebuild_nixos() {
     
     cd "$FLAKE_DIR" || error "Failed to change to flake directory: $FLAKE_DIR"
     
+    # Show current system info before rebuild
+    log "Current system info before rebuild:"
+    if [[ -f /run/current-system/nixos-version ]]; then
+        log "  Current NixOS version: $(cat /run/current-system/nixos-version)"
+    fi
+    
     # Rebuild and switch to the new configuration
     log "Running: sudo nixos-rebuild switch --flake \".#$hostname\""
     
     if ! sudo nixos-rebuild switch --flake ".#$hostname" 2>&1; then
         error "NixOS configuration rebuild failed. Check the above output for specific errors."
     fi
+    
+    # Verify the rebuild was successful
+    log "Verifying rebuild success..."
+    
+    if [[ -f /run/current-system/nixos-version ]]; then
+        log "New NixOS version: $(cat /run/current-system/nixos-version)"
+    fi
+    
+    # Check if our configuration files are in place
+    local config_path="/etc/nixos"
+    if [[ -L "$config_path" ]]; then
+        log "Configuration symlink target: $(readlink -f "$config_path")"
+    fi
+    
+    # Show system generations
+    log "Current system generations:"
+    sudo nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -3
     
     success "NixOS configuration rebuild completed"
 }
@@ -976,14 +1032,59 @@ main() {
     log "Step 11: Updating flake configuration..."
     update_flake_config "$hostname"
     
+    # In reinstall mode, ensure the system uses our flake configuration
+    if [[ "$reinstall_mode" == "1" ]]; then
+        log "Step 11.5: Setting up flake integration for existing system..."
+        setup_flake_integration "$hostname"
+    fi
+    
     # Install or rebuild system
     if [[ "$reinstall_mode" == "1" ]]; then
         log "Step 12: Rebuilding NixOS configuration..."
         rebuild_nixos "$hostname"
         
+        # Additional verification steps
+        log "Performing post-rebuild verification..."
+        
+        # Check if the flake configuration is being used
+        if [[ -f /etc/nixos/flake.nix ]]; then
+            log "Flake configuration found at /etc/nixos/flake.nix"
+        else
+            warn "No flake.nix found in /etc/nixos - system may be using legacy configuration"
+        fi
+        
+        # Check if our hostname was applied
+        local current_hostname=$(hostname)
+        if [[ "$current_hostname" == "$hostname" ]]; then
+            log "Hostname correctly set to: $current_hostname"
+        else
+            warn "Hostname mismatch: expected '$hostname', got '$current_hostname'"
+        fi
+        
+        # Check if systemd services are active
+        log "Checking critical services..."
+        if systemctl is-active --quiet systemd-logind; then
+            log "systemd-logind is active"
+        else
+            warn "systemd-logind is not active"
+        fi
+        
         success "Configuration rebuild completed successfully!"
         log "The new configuration is now active."
         log "Reboot to ensure all changes take effect."
+        
+        # Ask if user wants to reboot now
+        if [[ "${SKIP_CONFIRMATION:-}" != "1" ]]; then
+            echo
+            read -p "Would you like to reboot now to ensure all changes are applied? (y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                log "Rebooting system..."
+                sudo reboot
+            else
+                log "Reboot skipped. Please reboot manually when convenient."
+            fi
+        fi
     else
         log "Step 12: Setting up disks..."
         setup_disks "$hostname"
