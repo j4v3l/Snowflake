@@ -799,10 +799,22 @@ main() {
     
     # Check if we're in reinstall mode (running on already installed system)
     local reinstall_mode="${REINSTALL_MODE:-0}"
-    if [[ "$reinstall_mode" == "1" ]] || [[ -f /etc/nixos/configuration.nix ]] && [[ ! -f /etc/NIXOS ]]; then
-        log "Detected already installed system or REINSTALL_MODE=1"
+    
+    # Auto-detect if we're on an installed system
+    if [[ "$reinstall_mode" != "1" ]]; then
+        # Check multiple indicators of an installed system
+        if [[ -f /etc/nixos/configuration.nix ]] || \
+           [[ -d /etc/nixos ]] || \
+           [[ -f /run/current-system/nixos-version ]] || \
+           [[ ! -f /etc/NIXOS ]]; then
+            log "Detected already installed NixOS system"
+            log "Automatically enabling reinstall mode (use REINSTALL_MODE=0 to override)"
+            reinstall_mode="1"
+        fi
+    fi
+    
+    if [[ "$reinstall_mode" == "1" ]]; then
         log "Running in configuration rebuild mode (no disk partitioning)"
-        reinstall_mode="1"
     fi
     
     # Enable debug mode if requested
@@ -915,7 +927,8 @@ show_usage() {
     echo "  SKIP_INTERNET_CHECK=1  - Skip internet connectivity check"
     echo "  SKIP_CONFIRMATION=1    - Skip installation confirmation prompt"
     echo "  SKIP_DRM_DETECTION=1   - Skip DRM GPU detection (useful for VMs)"
-    echo "  REINSTALL_MODE=1       - Run on already installed system (rebuilds config)"
+    echo "  REINSTALL_MODE=1       - Force rebuild mode on installed system"
+    echo "  REINSTALL_MODE=0       - Force fresh install mode (ignores auto-detection)"
     echo "  DEBUG=1                - Enable debug mode with verbose output"
     echo
     echo "Examples:"
