@@ -292,7 +292,6 @@ EOF
 EOF
     fi
 }
-}
 
 # Detect hardware and create missing configurations
 detect_and_setup_hardware() {
