@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLAKE_DIR="${FLAKE_DIR:-$SCRIPT_DIR}"
 AVAILABLE_HOSTS=("yuki" "minimal")
-DEFAULT_HOST="yuki"
+DEFAULT_HOST="minimal"  # Changed to minimal as it's more universal
 DEFAULT_USER="jager"
 
 # Logging functions
@@ -170,6 +170,227 @@ update_system_user() {
     fi
 }
 
+# Create or update host configuration based on detected hardware
+create_adaptive_host_config() {
+    local hostname="$1"
+    local host_dir="$FLAKE_DIR/hosts/$hostname"
+    local host_config="$host_dir/default.nix"
+    
+    # Skip if this is an existing predefined host
+    if [[ "$hostname" == "yuki" ]] || [[ "$hostname" == "minimal" ]]; then
+        log "Using predefined host configuration for: $hostname"
+        return 0
+    fi
+    
+    log "Creating adaptive host configuration for: $hostname"
+    
+    # Detect hardware for dynamic configuration
+    local cpu_vendor="unknown"
+    local gpu_vendors=()
+    
+    # Detect CPU
+    if command -v lscpu &> /dev/null && lscpu | grep -qi "intel"; then
+        cpu_vendor="intel"
+    elif command -v lscpu &> /dev/null && lscpu | grep -qi "amd"; then
+        cpu_vendor="amd"
+    elif [[ -f /proc/cpuinfo ]]; then
+        if grep -qi "intel" /proc/cpuinfo; then
+            cpu_vendor="intel"
+        elif grep -qi "amd" /proc/cpuinfo; then
+            cpu_vendor="amd"
+        fi
+    fi
+    
+    # Detect GPU
+    if command -v lspci &> /dev/null; then
+        local gpu_info
+        gpu_info=$(lspci | grep -i "vga\|3d\|display")
+        
+        if echo "$gpu_info" | grep -qi "intel"; then
+            gpu_vendors+=("intel")
+        fi
+        
+        if echo "$gpu_info" | grep -qi "nvidia"; then
+            gpu_vendors+=("nvidia")
+        fi
+        
+        if echo "$gpu_info" | grep -qi "amd\|ati\|radeon"; then
+            gpu_vendors+=("amd")
+        fi
+    fi
+    
+    # Create host configuration
+    mkdir -p "$host_dir"
+    cat > "$host_config" << EOF
+{pkgs, ...}: {
+  imports = [
+    ./disk-configuration.nix
+    ./hardware-configuration.nix
+
+    ../config/fonts
+    ../config/hardware/acpi_call
+    ../config/hardware/bluetooth
+EOF
+
+    # Add CPU configuration
+    if [[ "$cpu_vendor" != "unknown" ]]; then
+        echo "    ../config/hardware/cpu/$cpu_vendor" >> "$host_config"
+    fi
+    
+    # Add GPU configurations
+    for gpu in "${gpu_vendors[@]}"; do
+        echo "    ../config/hardware/gpu/$gpu" >> "$host_config"
+    done
+    
+    # Add common configurations
+    cat >> "$host_config" << 'EOF'
+    ../config/hardware/ssd
+    ../config/window-managers/hyprland
+  ];
+
+  boot.kernelPackages = pkgs.linuxPackages_latest;
+
+  hardware = {
+    graphics = {
+      enable = true;
+      enable32Bit = true;
+    };
+  };
+
+  services = {
+    btrfs.autoScrub.enable = true;
+    fwupd.enable = true;
+  };
+}
+EOF
+
+    success "Created adaptive host configuration at: $host_config"
+    
+    # Create basic disk configuration if it doesn't exist
+    local disk_config="$host_dir/disk-configuration.nix"
+    if [[ ! -f "$disk_config" ]]; then
+        log "Creating basic disk configuration"
+        cat > "$disk_config" << 'EOF'
+{
+  # Basic disk configuration - modify as needed for your setup
+  # This is a placeholder that should be customized for your specific disk layout
+  
+  # If using disko, replace this with your disko configuration
+  # If using traditional partitioning, configure your filesystems here
+  
+  # Example for a simple setup:
+  # fileSystems."/" = {
+  #   device = "/dev/disk/by-label/nixos";
+  #   fsType = "ext4";
+  # };
+  
+  # fileSystems."/boot" = {
+  #   device = "/dev/disk/by-label/boot";
+  #   fsType = "vfat";
+  # };
+}
+EOF
+    fi
+}
+}
+
+# Detect hardware and create missing configurations
+detect_and_setup_hardware() {
+    log "Detecting hardware and setting up configurations..."
+    
+    # Detect CPU vendor
+    local cpu_vendor="unknown"
+    if command -v lscpu &> /dev/null && lscpu | grep -qi "intel"; then
+        cpu_vendor="intel"
+        log "Detected Intel CPU"
+    elif command -v lscpu &> /dev/null && lscpu | grep -qi "amd"; then
+        cpu_vendor="amd"
+        log "Detected AMD CPU"
+    elif [[ -f /proc/cpuinfo ]]; then
+        if grep -qi "intel" /proc/cpuinfo; then
+            cpu_vendor="intel"
+            log "Detected Intel CPU (from /proc/cpuinfo)"
+        elif grep -qi "amd" /proc/cpuinfo; then
+            cpu_vendor="amd"
+            log "Detected AMD CPU (from /proc/cpuinfo)"
+        fi
+    fi
+    
+    # Create AMD CPU configuration if needed
+    if [[ "$cpu_vendor" == "amd" ]] && [[ ! -d "$FLAKE_DIR/hosts/config/hardware/cpu/amd" ]]; then
+        log "Creating AMD CPU configuration..."
+        mkdir -p "$FLAKE_DIR/hosts/config/hardware/cpu/amd"
+        cat > "$FLAKE_DIR/hosts/config/hardware/cpu/amd/default.nix" << 'EOF'
+{lib, ...}: {
+  # AMD CPU microcode updates
+  hardware.cpu.amd.updateMicrocode = lib.mkDefault true;
+  
+  # AMD specific kernel parameters
+  boot.kernelParams = [
+    "amd_pstate=active"
+  ];
+}
+EOF
+        success "Created AMD CPU configuration"
+    fi
+    
+    # Detect GPU vendor
+    local gpu_vendors=()
+    if command -v lspci &> /dev/null; then
+        local gpu_info
+        gpu_info=$(lspci | grep -i "vga\|3d\|display")
+        
+        if echo "$gpu_info" | grep -qi "intel"; then
+            gpu_vendors+=("intel")
+            log "Detected Intel GPU"
+        fi
+        
+        if echo "$gpu_info" | grep -qi "nvidia"; then
+            gpu_vendors+=("nvidia")
+            log "Detected NVIDIA GPU"
+        fi
+        
+        if echo "$gpu_info" | grep -qi "amd\|ati\|radeon"; then
+            gpu_vendors+=("amd")
+            log "Detected AMD GPU"
+        fi
+    fi
+    
+    # Create AMD GPU configuration if needed
+    if [[ " ${gpu_vendors[*]} " =~ " amd " ]] && [[ ! -d "$FLAKE_DIR/hosts/config/hardware/gpu/amd" ]]; then
+        log "Creating AMD GPU configuration..."
+        mkdir -p "$FLAKE_DIR/hosts/config/hardware/gpu/amd"
+        cat > "$FLAKE_DIR/hosts/config/hardware/gpu/amd/default.nix" << 'EOF'
+{pkgs, ...}: {
+  # AMD GPU configuration
+  hardware.graphics = {
+    enable = true;
+    enable32Bit = true;
+    extraPackages = with pkgs; [
+      amdvlk
+      rocmPackages.clr.icd
+    ];
+    extraPackages32 = with pkgs; [
+      driversi686Linux.amdvlk
+    ];
+  };
+  
+  services.xserver.videoDrivers = ["amdgpu"];
+  
+  # ROCm support
+  systemd.tmpfiles.rules = [
+    "L+    /opt/rocm/hip   -    -    -     -    ${pkgs.rocmPackages.clr}"
+  ];
+  
+  environment.variables = {
+    ROC_ENABLE_PRE_VEGA = "1";
+  };
+}
+EOF
+        success "Created AMD GPU configuration"
+    fi
+}
+
 # Generate or copy hardware configuration
 setup_hardware_config() {
     local hostname="$1"
@@ -217,14 +438,22 @@ show_available_hosts() {
 validate_host() {
     local hostname="$1"
     
-    # Check if hostname is in available hosts
+    # Check if hostname is in available predefined hosts
     for host in "${AVAILABLE_HOSTS[@]}"; do
         if [[ "$host" == "$hostname" ]]; then
             return 0
         fi
     done
     
-    error "Invalid hostname: $hostname. Available hosts: ${AVAILABLE_HOSTS[*]}"
+    # If not a predefined host, validate hostname format
+    if [[ ! "$hostname" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$ ]] && [[ ${#hostname} -gt 1 ]]; then
+        error "Invalid hostname format: $hostname. Use alphanumeric characters and hyphens only."
+    elif [[ ${#hostname} -eq 1 ]] && [[ ! "$hostname" =~ ^[a-zA-Z0-9]$ ]]; then
+        error "Invalid hostname format: $hostname. Single character hostnames must be alphanumeric."
+    fi
+    
+    warn "Using custom hostname: $hostname (will create adaptive configuration)"
+    return 0
 }
 
 # Perform the NixOS rebuild
@@ -238,7 +467,17 @@ perform_rebuild() {
     # Change to flake directory to ensure relative paths work
     cd "$FLAKE_DIR"
     
+    # First try to build the configuration to check for errors
+    log "Testing configuration build..."
+    if ! nix build "$flake_path" --no-link 2>/dev/null; then
+        warn "Configuration build test failed, trying with verbose output..."
+        if ! nix build "$flake_path" --no-link; then
+            error "Configuration has build errors. Please check the configuration and try again."
+        fi
+    fi
+    
     # Run nixos-rebuild switch
+    log "Applying configuration..."
     if sudo nixos-rebuild switch --flake "$flake_path"; then
         success "Successfully switched to configuration: $hostname"
         return 0
@@ -317,6 +556,12 @@ main() {
     # Perform installation steps
     log "Starting installation..."
     
+    # Detect and setup hardware configurations first
+    detect_and_setup_hardware
+    
+    # Create or update host configuration
+    create_adaptive_host_config "$hostname"
+    
     cleanup_conflicting_files "$user"
     
     if [[ "$user" != "jager" ]]; then
@@ -336,15 +581,19 @@ case "${1:-}" in
     -h|--help)
         echo "Usage: $0 [hostname]"
         echo
-        echo "Available hostnames:"
+        echo "Predefined hostnames:"
         printf "  %s\n" "${AVAILABLE_HOSTS[@]}"
+        echo
+        echo "You can also specify a custom hostname to create an adaptive configuration"
+        echo "based on detected hardware."
         echo
         echo "Default hostname: $DEFAULT_HOST"
         echo
         echo "Examples:"
-        echo "  $0                # Install with default host (yuki)"
+        echo "  $0                # Install with default host (minimal)"
         echo "  $0 minimal        # Install minimal configuration"
         echo "  $0 yuki           # Install full yuki configuration"
+        echo "  $0 myhostname     # Create adaptive config for custom hostname"
         exit 0
         ;;
     *)
