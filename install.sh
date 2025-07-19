@@ -713,9 +713,13 @@ setup_flake_integration() {
         sudo mv /etc/nixos/configuration.nix /etc/nixos/configuration.nix.backup.$(date +%Y%m%d_%H%M%S)
     fi
     
-    # Copy our entire flake structure for reference
+    # Copy our entire flake structure for reference, but remove flake files
     log "Copying Snowflake configuration to /etc/nixos..."
     sudo cp -r "$FLAKE_DIR"/* /etc/nixos/
+    
+    # Remove flake files to prevent nixos-rebuild from using flake mode
+    log "Removing flake files to force traditional configuration mode..."
+    sudo rm -f /etc/nixos/flake.nix /etc/nixos/flake.lock
     
     # Create a traditional configuration.nix that imports all our modules
     log "Creating traditional configuration.nix..."
@@ -748,7 +752,7 @@ setup_flake_integration() {
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
   
   # System state version
-  system.stateVersion = "25.05"; # Update this as needed
+  system.stateVersion = "24.11"; # Update this as needed
 }
 EOF
     
@@ -904,12 +908,26 @@ rebuild_nixos() {
     fi
     
     # Rebuild and switch to the new configuration
-    log "Running: sudo nixos-rebuild switch"
+    log "Running: sudo nixos-rebuild switch (traditional mode)"
     
-    # Use traditional nixos-rebuild (no flake) since we created a traditional config
+    # Change to /etc/nixos to use our traditional configuration
+    cd /etc/nixos || error "Failed to change to /etc/nixos directory"
+    
+    # Verify we have the right files
+    if [[ ! -f configuration.nix ]]; then
+        error "configuration.nix not found in /etc/nixos"
+    fi
+    
+    # Disable experimental features to force traditional mode
+    export NIX_CONFIG="experimental-features = "
+    
+    # Use traditional nixos-rebuild
     if ! sudo nixos-rebuild switch; then
         error "NixOS configuration rebuild failed. Check the above output for specific errors."
     fi
+    
+    # Change back to original directory
+    cd "$FLAKE_DIR" || warn "Could not change back to original flake directory"
     
     # Verify the rebuild was successful
     log "Verifying rebuild success..."
