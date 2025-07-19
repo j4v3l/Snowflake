@@ -725,7 +725,7 @@ EOF
     # Ensure the flake.lock exists
     if [[ ! -f /etc/nixos/flake.lock ]]; then
         log "Initializing flake.lock in /etc/nixos..."
-        sudo nix flake lock /etc/nixos
+        sudo nix --experimental-features "nix-command flakes" flake lock /etc/nixos
     fi
     
     success "Flake integration configured"
