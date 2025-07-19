@@ -440,12 +440,40 @@ EOF
 EOF
     fi
 
-    # In reinstall mode, add a comment about existing filesystem configuration
+    # For reinstall mode, we need to handle filesystem configuration differently
     if [[ "$reinstall_mode" == "1" ]]; then
+        # Extract current filesystem information and create minimal config
+        log "Extracting current filesystem configuration for rebuild mode"
+        
+        # Get root filesystem info
+        local root_fs_type=$(findmnt -n -o FSTYPE / 2>/dev/null || echo "ext4")
+        local root_device=$(findmnt -n -o SOURCE / 2>/dev/null || echo "/dev/sda1")
+        
+        cat >> "$config_file" << EOF
+  
+  # Minimal filesystem configuration for rebuild mode
+  fileSystems."/" = {
+    device = "$root_device";
+    fsType = "$root_fs_type";
+  };
+EOF
+
+        # Add boot partition if it exists
+        local boot_device=$(findmnt -n -o SOURCE /boot 2>/dev/null || "")
+        if [[ -n "$boot_device" ]]; then
+            local boot_fs_type=$(findmnt -n -o FSTYPE /boot 2>/dev/null || echo "vfat")
+            cat >> "$config_file" << EOF
+  
+  fileSystems."/boot" = {
+    device = "$boot_device";
+    fsType = "$boot_fs_type";
+  };
+EOF
+        fi
+    else
         cat >> "$config_file" << 'EOF'
   
-  # Note: Filesystem configuration is managed by the existing system
-  # No additional filesystem definitions needed for rebuild mode
+  # Fresh install - filesystem configuration handled by disko
 EOF
     fi
 
