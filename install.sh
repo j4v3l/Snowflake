@@ -517,6 +517,16 @@ EOF
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
 EOF
 
+        # In reinstall mode, disable systemd-boot to avoid conflicts with existing bootloader
+        if [[ "$reinstall_mode" == "1" ]]; then
+            cat >> "$host_config" << 'EOF'
+  
+  # Disable systemd-boot in reinstall mode to avoid conflicts
+  boot.loader.systemd-boot.enable = false;
+EOF
+        fi
+EOF
+
         # Only enable btrfs.autoScrub for fresh installs with btrfs
         if [[ "$reinstall_mode" != "1" ]]; then
             echo "  services.btrfs.autoScrub.enable = true;" >> "$host_config"
@@ -572,6 +582,18 @@ EOF
   ];
 
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
+EOF
+
+        # In reinstall mode, disable systemd-boot to avoid conflicts with existing bootloader
+        if [[ "$reinstall_mode" == "1" ]]; then
+            cat >> "$host_config" << 'EOF'
+  
+  # Disable systemd-boot in reinstall mode to avoid conflicts
+  boot.loader.systemd-boot.enable = false;
+EOF
+        fi
+
+        cat >> "$host_config" << 'EOF'
 
   hardware.graphics = {
     enable = true;
