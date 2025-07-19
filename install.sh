@@ -502,7 +502,7 @@ setup_host_config() {
     
     if [[ "$config_type" == "minimal" ]]; then
         cat > "$host_config" << EOF
-{pkgs, ...}: {
+{pkgs, lib, ...}: {
   imports = [
 EOF
         # Only import disk configuration for fresh installs
@@ -535,7 +535,7 @@ EOF
     else
         # Full configuration with hardware-specific imports
         cat > "$host_config" << 'EOF'
-{pkgs, ...}: {
+{pkgs, lib, ...}: {
   imports = [
 EOF
         # Only import disk configuration for fresh installs
