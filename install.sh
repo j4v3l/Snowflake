@@ -517,12 +517,14 @@ EOF
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
 EOF
 
-        # In reinstall mode, disable systemd-boot to avoid conflicts with existing bootloader
+        # In reinstall mode, disable bootloader installation to avoid conflicts
         if [[ "$reinstall_mode" == "1" ]]; then
             cat >> "$host_config" << 'EOF'
   
-  # Disable EFI variable modification in reinstall mode to avoid conflicts
-  boot.loader.efi.canTouchEfiVariables = lib.mkForce false;
+  # Disable bootloader installation in reinstall mode - use existing bootloader
+  boot.loader.systemd-boot.enable = lib.mkForce false;
+  boot.loader.grub.enable = lib.mkForce false;
+  boot.loader.generic-extlinux-compatible.enable = lib.mkForce false;
 EOF
         fi
 
@@ -583,12 +585,14 @@ EOF
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
 EOF
 
-        # In reinstall mode, disable systemd-boot to avoid conflicts with existing bootloader
+        # In reinstall mode, disable bootloader installation to avoid conflicts
         if [[ "$reinstall_mode" == "1" ]]; then
             cat >> "$host_config" << 'EOF'
   
-  # Disable EFI variable modification in reinstall mode to avoid conflicts
-  boot.loader.efi.canTouchEfiVariables = lib.mkForce false;
+  # Disable bootloader installation in reinstall mode - use existing bootloader
+  boot.loader.systemd-boot.enable = lib.mkForce false;
+  boot.loader.grub.enable = lib.mkForce false;
+  boot.loader.generic-extlinux-compatible.enable = lib.mkForce false;
 EOF
         fi
 
