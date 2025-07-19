@@ -459,7 +459,7 @@ EOF
 EOF
 
         # Add boot partition if it exists
-        local boot_device=$(findmnt -n -o SOURCE /boot 2>/dev/null || "")
+        local boot_device=$(findmnt -n -o SOURCE /boot 2>/dev/null || echo "")
         if [[ -n "$boot_device" ]]; then
             local boot_fs_type=$(findmnt -n -o FSTYPE /boot 2>/dev/null || echo "vfat")
             cat >> "$config_file" << EOF
@@ -525,7 +525,6 @@ EOF
   boot.loader.systemd-boot.enable = false;
 EOF
         fi
-EOF
 
         # Only enable btrfs.autoScrub for fresh installs with btrfs
         if [[ "$reinstall_mode" != "1" ]]; then
