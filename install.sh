@@ -496,7 +496,8 @@ setup_host_config() {
     
     # Determine if this should be a minimal or full config
     local config_type="full"
-    if [[ "$hostname" == "minimal" || ${#GPU_VENDORS[@]} -eq 0 ]]; then
+    # Only use minimal for explicitly named "minimal" hostname, not for missing GPU
+    if [[ "$hostname" == "minimal" ]]; then
         config_type="minimal"
     fi
     
@@ -512,9 +513,26 @@ EOF
         
         cat >> "$host_config" << EOF
     ./hardware-configuration.nix
+    
+    # Essential system configuration (includes bootloader)
+    ../config/system
+    ../config/nix
+    ../config/security
+    ../config/services
+    
+    # Basic desktop services for minimal config
+    ./services/greetd.nix
+    ./services/dbus.nix
+    ./services/pipewire.nix
   ];
 
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
+  
+  # Enable basic graphics for minimal config
+  hardware.graphics = {
+    enable = true;
+    enable32Bit = true;
+  };
 EOF
 
         # In reinstall mode, disable bootloader installation to avoid conflicts
@@ -548,6 +566,13 @@ EOF
         cat >> "$host_config" << 'EOF'
     ./hardware-configuration.nix
     ./power-management.nix
+
+    # Essential system configuration (includes bootloader)
+    ../config/system
+    ../config/nix
+    ../config/security
+    ../config/services
+    ../config/shell
 
     ./programs/dconf.nix
     ./programs/gnupg.nix
@@ -855,6 +880,15 @@ install_nixos() {
     log "Available memory before NixOS installation: $(( available_mem / 1024 ))MB"
     
     cd "$FLAKE_DIR" || error "Failed to change to flake directory: $FLAKE_DIR"
+    
+    # Copy the flake configuration to target system for future rebuilds
+    log "Copying flake configuration to target system..."
+    sudo mkdir -p /mnt/etc/nixos
+    sudo cp -r "$FLAKE_DIR"/* /mnt/etc/nixos/
+    sudo chown -R root:root /mnt/etc/nixos
+    sudo chmod -R 644 /mnt/etc/nixos
+    sudo chmod 755 /mnt/etc/nixos /mnt/etc/nixos/hosts /mnt/etc/nixos/home /mnt/etc/nixos/flake
+    sudo find /mnt/etc/nixos -type d -exec chmod 755 {} \;
     
     # Install NixOS with the flake configuration to the mounted target
     log "Running: sudo nixos-install --root /mnt --flake \".#$hostname\" --no-root-passwd"
