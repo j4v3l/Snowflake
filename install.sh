@@ -487,9 +487,14 @@ EOF
   ];
 
   boot.kernelPackages = pkgs.linuxPackages_xanmod_latest;
-  services.btrfs.autoScrub.enable = true;
-}
 EOF
+
+        # Only enable btrfs.autoScrub for fresh installs with btrfs
+        if [[ "$reinstall_mode" != "1" ]]; then
+            echo "  services.btrfs.autoScrub.enable = true;" >> "$host_config"
+        fi
+        
+        echo "}" >> "$host_config"
     else
         # Full configuration with hardware-specific imports
         cat > "$host_config" << 'EOF'
@@ -546,8 +551,15 @@ EOF
   };
 
   services = {
-    btrfs.autoScrub.enable = true;
     fwupd.enable = true;
+EOF
+
+        # Only enable btrfs.autoScrub for fresh installs with btrfs
+        if [[ "$reinstall_mode" != "1" ]]; then
+            echo "    btrfs.autoScrub.enable = true;" >> "$host_config"
+        fi
+        
+        cat >> "$host_config" << 'EOF'
   };
 EOF
 
