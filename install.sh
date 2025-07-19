@@ -311,6 +311,9 @@ generate_disk_config() {
       };
     };
   };
+  
+  # Ensure proper filesystem creation order
+  fileSystems = {};
 }
 EOF
     
@@ -616,6 +619,18 @@ setup_disks() {
     local available_mem=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
     log "Available memory before disk setup: $(( available_mem / 1024 ))MB"
     
+    # Ensure target disk is not mounted
+    log "Unmounting any existing partitions on $TARGET_DISK..."
+    sudo umount ${TARGET_DISK}* 2>/dev/null || true
+    
+    # Wipe any existing filesystem signatures
+    log "Wiping filesystem signatures on $TARGET_DISK..."
+    sudo wipefs -af "$TARGET_DISK" 2>/dev/null || true
+    
+    # Wait for kernel to update partition table
+    sudo partprobe "$TARGET_DISK" 2>/dev/null || true
+    sleep 2
+    
     # Change to flake directory
     cd "$FLAKE_DIR" || error "Failed to change to flake directory: $FLAKE_DIR"
     
@@ -626,16 +641,20 @@ setup_disks() {
     if timeout 300 sudo nix --experimental-features "nix-command flakes" run github:nix-community/disko -- --mode disko --flake ".#$hostname" 2>&1; then
         success "Disk partitioning completed successfully"
         
+        # Wait for device nodes to be created
+        log "Waiting for device nodes to be created..."
+        sleep 3
+        
         # Verify that the target disk is properly mounted
         log "Verifying disk mounts..."
         if mountpoint -q /mnt; then
             log "Root filesystem mounted at /mnt"
             # Show mount info for verification
-            local mount_device=$(findmnt -n -o SOURCE /mnt)
+            local mount_device=$(findmnt -n -o SOURCE /mnt 2>/dev/null || echo "unknown")
             log "Root mount source: $mount_device"
             
             # Check available space on target disk
-            local available_space=$(df -h /mnt | awk 'NR==2 {print $4}')
+            local available_space=$(df -h /mnt 2>/dev/null | awk 'NR==2 {print $4}' || echo "unknown")
             log "Available space on target: $available_space"
         else
             error "Target disk not mounted at /mnt after disko setup. Check disko configuration."
@@ -651,10 +670,20 @@ setup_disks() {
         local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             error "Disk setup timed out after 5 minutes. The disk might be too slow or the network connection is poor."
-            error "Try running the installer again or use a faster disk."
         else
-            error "Disk setup failed with exit code $exit_code. Check if disk $TARGET_DISK exists and is not in use."
-            error "Make sure the disk is not mounted and no other processes are using it."
+            error "Disk setup failed with exit code $exit_code."
+            log "This could be caused by:"
+            log "  - Disk $TARGET_DISK is in use or mounted"
+            log "  - Insufficient permissions"
+            log "  - Hardware or virtualization issues"
+            log "  - Network connectivity problems"
+            
+            # Show some diagnostic information
+            log "Disk information:"
+            lsblk "$TARGET_DISK" 2>/dev/null || log "  Cannot read disk information"
+            
+            log "Mount information:"
+            mount | grep "$TARGET_DISK" || log "  No mounts found for $TARGET_DISK"
         fi
         return 1
     fi
