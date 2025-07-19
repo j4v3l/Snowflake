@@ -401,7 +401,47 @@ setup_hardware_config() {
     # Create host directory if it doesn't exist
     mkdir -p "$host_dir"
     
-    # Try to find existing hardware configuration
+    # Check if this is a predefined host with existing hardware config
+    if [[ -f "$hw_config" ]] && [[ "$hostname" == "yuki" || "$hostname" == "minimal" ]]; then
+        log "Using existing hardware configuration for predefined host: $hostname"
+        
+        # For predefined hosts, we need to update the hardware config carefully
+        # to avoid filesystem conflicts with disko configurations
+        if [[ "$hostname" == "minimal" ]]; then
+            log "Updating minimal host hardware configuration to avoid filesystem conflicts"
+            
+            # Generate a new hardware config and filter out filesystem definitions
+            # that might conflict with disko
+            local temp_hw_config="/tmp/hardware-configuration-temp.nix"
+            nixos-generate-config --show-hardware-config > "$temp_hw_config"
+            
+            # Create a filtered hardware config that removes filesystem definitions
+            # since minimal uses disko for disk management
+            cat > "$hw_config" << 'EOF'
+# Hardware configuration for use with disko
+# Filesystem definitions are handled by disk-configuration.nix
+
+{ config, lib, pkgs, modulesPath, ... }:
+
+{
+  imports = [ (modulesPath + "/installer/scan/not-detected.nix") ];
+
+EOF
+            
+            # Extract only the hardware-specific parts (not filesystem definitions)
+            grep -E "(boot\.initrd|boot\.kernelModules|hardware\.cpu|nixpkgs\.hostPlatform|powerManagement|services\.xserver\.videoDrivers)" "$temp_hw_config" >> "$hw_config" || true
+            
+            # Add the closing brace
+            echo "}" >> "$hw_config"
+            
+            rm -f "$temp_hw_config"
+            log "Created minimal-compatible hardware configuration"
+        fi
+        
+        return 0
+    fi
+    
+    # Try to find existing hardware configuration for new hosts
     if [[ -f "/etc/nixos/hardware-configuration.nix" ]]; then
         log "Using existing hardware configuration from /etc/nixos"
         cp "/etc/nixos/hardware-configuration.nix" "$hw_config"
