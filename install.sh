@@ -521,8 +521,8 @@ EOF
         if [[ "$reinstall_mode" == "1" ]]; then
             cat >> "$host_config" << 'EOF'
   
-  # Disable systemd-boot in reinstall mode to avoid conflicts
-  boot.loader.systemd-boot.enable = lib.mkForce false;
+  # Disable EFI variable modification in reinstall mode to avoid conflicts
+  boot.loader.efi.canTouchEfiVariables = lib.mkForce false;
 EOF
         fi
 
@@ -587,8 +587,8 @@ EOF
         if [[ "$reinstall_mode" == "1" ]]; then
             cat >> "$host_config" << 'EOF'
   
-  # Disable systemd-boot in reinstall mode to avoid conflicts
-  boot.loader.systemd-boot.enable = lib.mkForce false;
+  # Disable EFI variable modification in reinstall mode to avoid conflicts
+  boot.loader.efi.canTouchEfiVariables = lib.mkForce false;
 EOF
         fi
 
