@@ -458,10 +458,10 @@ validate_host() {
 # Perform the NixOS rebuild
 perform_rebuild() {
     local hostname="$1"
-    local flake_path="$FLAKE_DIR#$hostname"
+    local flake_path="$FLAKE_DIR#nixosConfigurations.$hostname.config.system.build.toplevel"
     
     log "Building and switching to configuration: $hostname"
-    log "Flake path: $flake_path"
+    log "Flake path: $FLAKE_DIR#$hostname"
     
     # Change to flake directory to ensure relative paths work
     cd "$FLAKE_DIR"
@@ -471,13 +471,13 @@ perform_rebuild() {
     if ! nix build "$flake_path" --no-link 2>/dev/null; then
         warn "Configuration build test failed, trying with verbose output..."
         if ! nix build "$flake_path" --no-link; then
-            error "Configuration has build errors. Please check the configuration and try again."
+            warn "Build test failed, but proceeding with nixos-rebuild which may provide better error messages..."
         fi
     fi
     
     # Run nixos-rebuild switch
     log "Applying configuration..."
-    if sudo nixos-rebuild switch --flake "$flake_path"; then
+    if sudo nixos-rebuild switch --flake "$FLAKE_DIR#$hostname"; then
         success "Successfully switched to configuration: $hostname"
         return 0
     else
