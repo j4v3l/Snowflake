@@ -324,6 +324,7 @@ EOF
 generate_hardware_config() {
     local hostname="$1"
     local config_file="$FLAKE_DIR/hosts/$hostname/hardware-configuration.nix"
+    local reinstall_mode="${2:-0}"  # Pass reinstall mode as parameter
     
     log "Generating hardware configuration for $hostname"
     
@@ -333,7 +334,7 @@ generate_hardware_config() {
     # For disko-based installations, we should NOT use nixos-generate-config
     # because it will conflict with disko's filesystem definitions
     log "Using manual hardware configuration (compatible with disko)"
-    generate_manual_hardware_config "$hostname" "$config_file"
+    generate_manual_hardware_config "$hostname" "$config_file" "$reinstall_mode"
     
     success "Generated hardware configuration: $config_file"
 }
@@ -342,6 +343,7 @@ generate_hardware_config() {
 generate_manual_hardware_config() {
     local hostname="$1"
     local config_file="$2"
+    local reinstall_mode="${3:-0}"  # Pass reinstall mode as parameter
     
     log "Generating manual hardware configuration compatible with disko"
     
@@ -438,6 +440,15 @@ EOF
 EOF
     fi
 
+    # In reinstall mode, add a comment about existing filesystem configuration
+    if [[ "$reinstall_mode" == "1" ]]; then
+        cat >> "$config_file" << 'EOF'
+  
+  # Note: Filesystem configuration is managed by the existing system
+  # No additional filesystem definitions needed for rebuild mode
+EOF
+    fi
+
     echo "}" >> "$config_file"
     
     log "Generated hardware configuration with ${#initrd_modules[@]} initrd modules and ${#kernel_modules[@]} kernel modules"
@@ -448,6 +459,7 @@ setup_host_config() {
     local hostname="$1"
     local host_dir="$FLAKE_DIR/hosts/$hostname"
     local host_config="$host_dir/default.nix"
+    local reinstall_mode="${2:-0}"  # Pass reinstall mode as parameter
     
     log "Setting up host configuration for $hostname"
     
@@ -464,7 +476,13 @@ setup_host_config() {
         cat > "$host_config" << EOF
 {pkgs, ...}: {
   imports = [
-    ./disk-configuration.nix
+EOF
+        # Only import disk configuration for fresh installs
+        if [[ "$reinstall_mode" != "1" ]]; then
+            echo "    ./disk-configuration.nix" >> "$host_config"
+        fi
+        
+        cat >> "$host_config" << EOF
     ./hardware-configuration.nix
   ];
 
@@ -477,7 +495,13 @@ EOF
         cat > "$host_config" << 'EOF'
 {pkgs, ...}: {
   imports = [
-    ./disk-configuration.nix
+EOF
+        # Only import disk configuration for fresh installs
+        if [[ "$reinstall_mode" != "1" ]]; then
+            echo "    ./disk-configuration.nix" >> "$host_config"
+        fi
+        
+        cat >> "$host_config" << 'EOF'
     ./hardware-configuration.nix
     ./power-management.nix
 
@@ -876,10 +900,10 @@ main() {
     generate_disk_config "$hostname" "$TARGET_DISK"
     
     log "Step 8: Generating hardware configuration..."
-    generate_hardware_config "$hostname"
+    generate_hardware_config "$hostname" "$reinstall_mode"
     
     log "Step 9: Setting up host configuration..."
-    setup_host_config "$hostname"
+    setup_host_config "$hostname" "$reinstall_mode"
     
     log "Step 10: Creating service files..."
     create_service_files "$hostname"
