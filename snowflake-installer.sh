@@ -598,9 +598,15 @@ main() {
         fi
     done
 
+
     # Validate hostname
     validate_host "$hostname"
     log "Selected host configuration: $hostname"
+
+    # Check if flake output exists for the selected host
+    if ! nix flake show "$FLAKE_DIR" | grep -q "nixosConfigurations.$hostname"; then
+        error "Host '$hostname' not found in flake outputs.\nCheck your flake.nix and hosts/default.nix for correct configuration."
+    fi
 
     # Confirm installation
     echo
