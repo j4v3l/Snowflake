@@ -12,10 +12,7 @@
     };
     hostConfigs = import ./hosts/default.nix {inherit inputs self;};
   in
-    flakeParts
-    // {
-      inherit (hostConfigs.flake) nixosConfigurations;
-    };
+    flakeParts // (hostConfigs // {});
 
   inputs = {
     systems.url = "github:nix-systems/default-linux";
