@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLAKE_DIR="${FLAKE_DIR:-$SCRIPT_DIR}"
 AVAILABLE_HOSTS=("yuki" "minimal")
-DEFAULT_HOST="minimal"  # Changed to minimal as it's more universal
+DEFAULT_HOST=""  # No default host; user must choose
 DEFAULT_USER="jager"
 
 # Logging functions
@@ -555,29 +555,53 @@ show_summary() {
 
 # Main installation function
 main() {
-    local hostname="${1:-$DEFAULT_HOST}"
+    local hostname
     local user
-    
+
     echo "=== Snowflake NixOS Configuration Installer ==="
     echo
-    
+
     # Perform checks
     check_root
     check_nixos
     check_prerequisites
-    
+
     # Detect current user
     user=$(detect_user)
     log "Detected user: $user"
-    
+
     # Show available hosts
     show_available_hosts
     echo
-    
+
+    # Prompt for hostname selection
+    while true; do
+        echo "Please select a host configuration or enter a custom hostname:"
+        local i=1
+        for host in "${AVAILABLE_HOSTS[@]}"; do
+            echo "  $i) $host"
+            ((i++))
+        done
+        echo "  c) Custom hostname"
+        read -p "Enter your choice [1-${#AVAILABLE_HOSTS[@]} or c]: " choice
+
+        if [[ "$choice" =~ ^[1-9][0-9]*$ ]] && (( choice >= 1 && choice <= ${#AVAILABLE_HOSTS[@]} )); then
+            hostname="${AVAILABLE_HOSTS[$((choice-1))]}"
+            break
+        elif [[ "$choice" == "c" || "$choice" == "C" ]]; then
+            read -p "Enter custom hostname: " hostname
+            if [[ -n "$hostname" ]]; then
+                break
+            fi
+        else
+            echo "Invalid choice. Please try again."
+        fi
+    done
+
     # Validate hostname
     validate_host "$hostname"
     log "Selected host configuration: $hostname"
-    
+
     # Confirm installation
     echo
     echo "About to install Snowflake configuration:"
@@ -591,7 +615,7 @@ main() {
         log "Installation cancelled by user"
         exit 0
     fi
-    
+
     # Perform installation steps
     log "Starting installation..."
 
