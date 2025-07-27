@@ -604,7 +604,7 @@ main() {
     log "Selected host configuration: $hostname"
 
     # Check if flake output exists for the selected host
-    if ! nix flake show "$FLAKE_DIR" | grep -q "nixosConfigurations.$hostname"; then
+    if ! nix flake show --extra-experimental-features 'nix-command flakes' "$FLAKE_DIR" | grep -q "nixosConfigurations.$hostname"; then
         error "Host '$hostname' not found in flake outputs.\nCheck your flake.nix and hosts/default.nix for correct configuration."
     fi
 
