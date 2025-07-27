@@ -1115,12 +1115,29 @@ main() {
         set -x
     fi
     
+
     log "Step 1: Checking if running as root..."
     check_root
-    
+
+    log "Step 1.5: Ensuring home directory ownership..."
+    local current_user
+    current_user=$(whoami)
+    local home_dir="/home/$current_user"
+    if [[ -d "$home_dir" ]]; then
+        owner=$(stat -c '%U' "$home_dir")
+        if [[ "$owner" != "$current_user" ]]; then
+            warn "Home directory $home_dir is owned by $owner, changing ownership to $current_user..."
+            if sudo chown -R "$current_user:$current_user" "$home_dir"; then
+                success "Changed ownership of $home_dir to $current_user."
+            else
+                error "Failed to change ownership of $home_dir to $current_user."
+            fi
+        fi
+    fi
+
     log "Step 2: Checking prerequisites..."
     check_prerequisites
-    
+
     log "Step 3: Validating hostname..."
     validate_hostname "$hostname"
     
