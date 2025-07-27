@@ -2,14 +2,19 @@
   # https://github.com/jager/yuki
   description = "Yuki: NixOS and Home Manager Flake";
 
-  outputs = inputs:
-    inputs.flake-parts.lib.mkFlake {inherit inputs;} {
+  outputs = {self, ...} @ inputs: let
+    flakeParts = inputs.flake-parts.lib.mkFlake {inherit inputs;} {
       systems = import inputs.systems;
-
       imports = [
         ./flake
         ./hosts
       ];
+    };
+    hostConfigs = import ./hosts/default.nix {inherit inputs self;};
+  in
+    flakeParts
+    // {
+      inherit (hostConfigs.flake) nixosConfigurations;
     };
 
   inputs = {
