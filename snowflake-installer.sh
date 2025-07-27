@@ -594,24 +594,38 @@ main() {
     
     # Perform installation steps
     log "Starting installation..."
-    
+
+    # Ensure home directory is owned by the detected user
+    local home_dir="/home/$user"
+    if [[ -d "$home_dir" ]]; then
+        owner=$(stat -c '%U' "$home_dir")
+        if [[ "$owner" != "$user" ]]; then
+            warn "Home directory $home_dir is owned by $owner, changing ownership to $user..."
+            if sudo chown -R "$user:$user" "$home_dir"; then
+                success "Changed ownership of $home_dir to $user."
+            else
+                error "Failed to change ownership of $home_dir to $user."
+            fi
+        fi
+    fi
+
     # Detect and setup hardware configurations first
     detect_and_setup_hardware
-    
+
     # Create or update host configuration
     create_adaptive_host_config "$hostname"
-    
+
     cleanup_conflicting_files "$user"
-    
+
     if [[ "$user" != "jager" ]]; then
         update_user_config "$user"
         update_system_user "$user"
     fi
-    
+
     setup_hardware_config "$hostname"
-    
+
     perform_rebuild "$hostname"
-    
+
     show_summary "$hostname" "$user"
 }
 
