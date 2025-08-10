@@ -221,6 +221,64 @@ attempt_repair_flake_hosts_file() {
     return 0
 }
 
+# Canonically reset the nixosConfigurations block to known-good entries
+canonical_reset_nixos_configurations() {
+    local file="$FLAKE_DIR/hosts/default.nix"
+    [[ -f "$file" ]] || return 1
+
+    warn "Performing canonical reset of nixosConfigurations in $file"
+    if [[ "${SKIP_CONFIRMATION:-}" != "1" ]]; then
+        read -p "This will rewrite the nixosConfigurations block. Proceed? (y/N): " -n 1 -r; echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
+    sudo cp "$file" "$file.backup.reset.$(date +%Y%m%d_%H%M%S)"
+
+    local have_yuki=""
+    local have_minimal=""
+    [[ -d "$FLAKE_DIR/hosts/yuki" ]] && have_yuki=1 || true
+    [[ -d "$FLAKE_DIR/hosts/minimal" ]] && have_minimal=1 || true
+
+    awk -v have_yuki="$have_yuki" -v have_minimal="$have_minimal" '
+        BEGIN { inblock=0 }
+        {
+            if (!inblock) {
+                print $0
+                # Detect start of nixosConfigurations attrset
+                if ($0 ~ /nixosConfigurations[[:space:]]*=[[:space:]]*\{[[:space:]]*$/) {
+                    inblock=1
+                    # Insert canonical entries on next lines
+                    if (have_yuki==1) {
+                        print "    yuki = mkNixosSystem {"
+                        print "      hostname = \"yuki\";"
+                        print "      system = \"x86_64-linux\";"
+                        print "      modules = [nixosModules homeModules];"
+                        print "    };"
+                    }
+                    if (have_minimal==1) {
+                        print "    minimal = mkNixosSystem {"
+                        print "      hostname = \"minimal\";"
+                        print "      system = \"x86_64-linux\";"
+                        print "      modules = [nixosModules];"
+                        print "    };"
+                    }
+                }
+            } else {
+                # Inside block: skip everything until we reach the closing '};'
+                if ($0 ~ /^[[:space:]]*};[[:space:]]*$/) {
+                    print $0
+                    inblock=0
+                }
+            }
+        }
+    ' "$file" | sudo tee "$file" > /dev/null
+
+    success "nixosConfigurations block reset in $file (backup created)."
+    return 0
+}
+
 # Detect CPU vendor
 detect_cpu() {
     log "Detecting CPU..."
@@ -962,11 +1020,29 @@ setup_disks() {
         warn "Flake evaluation failed for host '$hostname'. Attempting auto-repair..."
         if attempt_repair_flake_hosts_file; then
             log "Retrying flake evaluation after repair..."
-            if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
-                error "Flake evaluation still failing after repair.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+            if nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
+                :
+            else
+                warn "Auto-repair failed. Attempting canonical reset of nixosConfigurations..."
+                if canonical_reset_nixos_configurations; then
+                    log "Retrying flake evaluation after canonical reset..."
+                    if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
+                        error "Flake evaluation still failing after canonical reset.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' is valid. You can restore it with: git checkout -- hosts/default.nix"
+                    fi
+                else
+                    error "Flake evaluation failed and canonical reset declined.\nRestore hosts/default.nix (git checkout -- hosts/default.nix) and rerun."
+                fi
             fi
         else
-            error "Flake evaluation failed for host '$hostname'.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+            warn "Auto-repair declined or not applicable. Offering canonical reset..."
+            if canonical_reset_nixos_configurations; then
+                log "Retrying flake evaluation after canonical reset..."
+                if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
+                    error "Flake evaluation still failing after canonical reset.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' is valid. You can restore it with: git checkout -- hosts/default.nix"
+                fi
+            else
+                error "Flake evaluation failed for host '$hostname'.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+            fi
         fi
     fi
     
