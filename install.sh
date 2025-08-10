@@ -262,6 +262,12 @@ generate_disk_config() {
     
     log "Generating disk configuration for $hostname using $disk"
     
+    # Respect existing curated configs unless forced
+    if [[ -f "$config_file" ]] && [[ "${FORCE_DISK_CONFIG:-0}" != "1" ]]; then
+        log "Existing disk-configuration.nix found for $hostname, skipping generation (set FORCE_DISK_CONFIG=1 to overwrite)"
+        return 0
+    fi
+
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$config_file")"
     
@@ -328,6 +334,12 @@ generate_hardware_config() {
     
     log "Generating hardware configuration for $hostname"
     
+    # Respect existing curated configs unless forced
+    if [[ -f "$config_file" ]] && [[ "${REGENERATE_HW_CONFIG:-0}" != "1" ]]; then
+        log "Existing hardware-configuration.nix found for $hostname, skipping generation (set REGENERATE_HW_CONFIG=1 to overwrite)"
+        return 0
+    fi
+
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$config_file")"
     
@@ -491,6 +503,12 @@ setup_host_config() {
     
     log "Setting up host configuration for $hostname"
     
+    # If a curated host config already exists, don't overwrite unless forced
+    if [[ -f "$host_config" ]] && [[ "${REGENERATE_HOST:-0}" != "1" ]]; then
+        log "Existing host configuration detected at $host_config, skipping (set REGENERATE_HOST=1 to overwrite)"
+        return 0
+    fi
+
     # Create directory if it doesn't exist
     mkdir -p "$host_dir"
     
@@ -696,31 +714,60 @@ update_flake_config() {
     
     log "Updating flake configuration to include $hostname"
     
-    # Check if hostname already exists in hosts/default.nix
-    if grep -q "\"$hostname\"" "$FLAKE_DIR/hosts/default.nix"; then
+    # Ensure host directory exists
+    if [[ ! -d "$FLAKE_DIR/hosts/$hostname" ]]; then
+        warn "Host directory hosts/$hostname does not exist; skipping flake update"
+        return
+    fi
+
+    # Check if hostname already exists in nixosConfigurations block
+    if grep -Eq "(^|[^a-zA-Z0-9_])$hostname[[:space:]]*=[[:space:]]*mkNixosSystem" "$FLAKE_DIR/hosts/default.nix"; then
         log "Host $hostname already exists in flake configuration"
         return
     fi
-    
-    # Add the new host configuration
-    # This is a simplified approach - in practice you might want more sophisticated parsing
-    local temp_file=$(mktemp)
+
+    # Insert the new host into the nixosConfigurations attribute set
+    # We locate the nixosConfigurations = { ... }; block and inject before its closing brace
+    local src="$FLAKE_DIR/hosts/default.nix"
+    local tmp
+    tmp=$(mktemp) || error "Failed to create temporary file"
+
     awk -v hostname="$hostname" '
-    /^  in \{$/ {
-        print $0
-        print ""
-        print "    " hostname " = mkNixosSystem {"
-        print "      hostname = \"" hostname "\";"
-        print "      system = \"x86_64-linux\";"
-        print "      modules = [nixosModules homeModules];"
-        print "    };"
-        next
-    }
-    { print }
-    ' "$FLAKE_DIR/hosts/default.nix" > "$temp_file"
-    
-    mv "$temp_file" "$FLAKE_DIR/hosts/default.nix"
-    success "Updated flake configuration"
+        BEGIN { in_nixos = 0; brace = 0 }
+        {
+            line = $0
+            # Detect start of nixosConfigurations block
+            if (in_nixos == 0 && line ~ /(^|[^a-zA-Z0-9_])nixosConfigurations[[:space:]]*=[[:space:]]*\{/ ) {
+                in_nixos = 1
+                brace = 1
+                print line
+                next
+            }
+            if (in_nixos == 1) {
+                # Track nested braces within the block
+                openCount = gsub(/\{/, "{", line)
+                closeCount = gsub(/\}/, "}", line)
+                brace += openCount - closeCount
+
+                # If this line closes the nixosConfigurations block (brace == 0 after processing),
+                # inject our host before printing the closing line
+                if (brace == 0) {
+                    print "    " hostname " = mkNixosSystem {"
+                    print "      hostname = \"" hostname "\";"
+                    print "      system = \"x86_64-linux\";"
+                    print "      modules = [nixosModules homeModules];"
+                    print "    };"
+                    print line
+                    in_nixos = 0
+                    next
+                }
+            }
+            print line
+        }
+    ' "$src" > "$tmp" || error "Failed to update flake hosts/default.nix"
+
+    mv "$tmp" "$src"
+    success "Updated flake configuration to include host: $hostname"
 }
 
 # Set up flake integration for existing system
@@ -979,7 +1026,8 @@ rebuild_nixos() {
         nixos-rebuild list-generations | tail -3 | while read -r line; do
             log "  $line"
         done
-    else
+    fi
+    if command -v nix-env &> /dev/null; then
         sudo nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -3 | while read -r line; do
             log "  $line"
         done
@@ -1337,6 +1385,9 @@ show_usage() {
     echo "  REINSTALL_MODE=1       - Force rebuild mode on installed system"
     echo "  REINSTALL_MODE=0       - Force fresh install mode (ignores auto-detection)"
     echo "  DEBUG=1                - Enable debug mode with verbose output"
+    echo "  FORCE_DISK_CONFIG=1    - Overwrite existing disk-configuration.nix"
+    echo "  REGENERATE_HW_CONFIG=1 - Overwrite existing hardware-configuration.nix"
+    echo "  REGENERATE_HOST=1      - Overwrite existing hosts/<name>/default.nix"
     echo
     echo "Examples:"
     echo "  $0                           # Use defaults"
