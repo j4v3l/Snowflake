@@ -1,0 +1,9 @@
+sudo fallocate -l 8G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+free -h
+
+sudo -H nixos-rebuild switch --flake ".#yuki" \
+  --option experimental-features "nix-command flakes" \
+  --option max-jobs 1 --option cores 1
