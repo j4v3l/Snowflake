@@ -111,6 +111,23 @@ check_prerequisites() {
     success "Prerequisites check passed"
 }
 
+    # Sanity check for accidental corruptions in hosts/default.nix
+    sanity_check_flake_hosts_file() {
+        local file="$FLAKE_DIR/hosts/default.nix"
+        if [[ ! -f "$file" ]]; then
+            return 0
+        fi
+
+        # Detect lines where an unquoted attribute key contains '=' before mkNixosSystem
+        # Example of corruption: SKIP_DRM_DETECTION=1 = mkNixosSystem {
+        local bad_lines
+        bad_lines=$(grep -nE '^[[:space:]]*[^"{[:space:}][^[:space:}]*=[[:space:]]*mkNixosSystem' "$file" | grep '=') || true
+        if [[ -n "$bad_lines" ]]; then
+            echo -e "\n$bad_lines" | sed 's/^/  -> /'
+            error "Invalid attribute key detected in $file (contains '=' before mkNixosSystem).\nThis likely happened because a KEY=VALUE token was passed as a positional argument.\nFix: restore the file (e.g., git checkout -- hosts/default.nix) or remove the broken stanza, then rerun using VAR=VALUE ./install.sh [hostname] [disk]."
+        fi
+    }
+
 # Detect available storage devices
 detect_storage() {
     log "Detecting storage devices..."
@@ -882,6 +899,12 @@ setup_disks() {
     
     # Format the disk using disko
     log "Partitioning and formatting $TARGET_DISK..."
+
+    # Pre-validate flake host to fail fast with actionable error if broken
+    log "Validating flake host '.#$hostname' before disko..."
+    if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
+        error "Flake evaluation failed for host '$hostname'.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+    fi
     
     # Run disko with timeout and better error handling
     if timeout 300 sudo nix --experimental-features "nix-command flakes" run github:nix-community/disko -- --mode disko --flake ".#$hostname" 2>&1; then
@@ -1259,6 +1282,9 @@ main() {
 
     log "Step 2: Checking prerequisites..."
     check_prerequisites
+
+    log "Step 2.1: Checking flake host definitions integrity..."
+    sanity_check_flake_hosts_file
 
     log "Step 3: Validating hostname..."
     validate_hostname "$hostname"
