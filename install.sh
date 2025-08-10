@@ -1160,32 +1160,62 @@ validate_hostname() {
 }
 
 # Main installation process
-# Main installation process
 main() {
     local hostname="${1:-$DEFAULT_HOSTNAME}"
     local target_disk="${2:-}"
     
     log "Starting Snowflake NixOS installation..."
     log "Hostname: $hostname"
-    
-    # Check if we're in reinstall mode (running on already installed system)
-    local reinstall_mode="${REINSTALL_MODE:-0}"
-    
-    # Auto-detect if we're on an installed system
-    if [[ "$reinstall_mode" != "1" ]]; then
-        # Check multiple indicators of an installed system
-        if [[ -f /etc/nixos/configuration.nix ]] || \
-           [[ -d /etc/nixos ]] || \
-           [[ -f /run/current-system/nixos-version ]] || \
-           [[ ! -f /etc/NIXOS ]]; then
+
+    # Detect environment: live ISO vs installed system
+    local reinstall_mode
+    reinstall_mode="${REINSTALL_MODE:-}"
+
+    detect_environment() {
+        local fs_type
+        fs_type=$(findmnt -n -o FSTYPE / 2>/dev/null || echo "unknown")
+        local cur_user cur_host root_src
+        cur_user=$(whoami 2>/dev/null || echo "unknown")
+        cur_host=$(hostname 2>/dev/null || echo "unknown")
+        root_src=$(findmnt -n -o SOURCE / 2>/dev/null || echo "unknown")
+
+        log "Environment probe: root.fs=$fs_type root.src=$root_src user=$cur_user host=$cur_host"
+
+        # Heuristics: NixOS live ISO typically has root on overlay (with squashfs lower)
+        # Treat overlay/squashfs/tmpfs root as live installer environment
+        case "$fs_type" in
+            overlay|squashfs|tmpfs)
+                echo "live"
+                return 0
+                ;;
+        esac
+
+        # Additional weak signal: default live host/user is often 'nixos'
+        if [[ "$cur_user" == "nixos" || "$cur_host" == "nixos" ]]; then
+            echo "live"
+            return 0
+        fi
+
+        echo "installed"
+    }
+
+    if [[ -z "$reinstall_mode" ]]; then
+        local env_kind
+        env_kind=$(detect_environment)
+        if [[ "$env_kind" == "installed" ]]; then
             log "Detected already installed NixOS system"
             log "Automatically enabling reinstall mode (use REINSTALL_MODE=0 to override)"
             reinstall_mode="1"
+        else
+            log "Detected NixOS live installer environment"
+            reinstall_mode="0"
         fi
     fi
-    
+
     if [[ "$reinstall_mode" == "1" ]]; then
         log "Running in configuration rebuild mode (no disk partitioning)"
+    else
+        log "Running in fresh install mode (will partition target disk)"
     fi
     
     # Enable debug mode if requested
