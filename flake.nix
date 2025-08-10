@@ -3,16 +3,15 @@
   description = "Yuki: NixOS and Home Manager Flake";
 
   outputs = {self, ...} @ inputs: let
-    flakeParts = inputs.flake-parts.lib.mkFlake {inherit inputs;} {
+    flakeParts = inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = import inputs.systems;
       imports = [
         ./flake
-        ./hosts
       ];
     };
-    hostConfigs = import ./hosts/default.nix {inherit inputs self;};
+    hostConfigs = import ./hosts/default.nix { inherit inputs self; };
   in
-    flakeParts // (hostConfigs // {});
+    flakeParts // hostConfigs;
 
   inputs = {
     systems.url = "github:nix-systems/default-linux";
