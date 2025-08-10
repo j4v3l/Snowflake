@@ -720,8 +720,9 @@ update_flake_config() {
         return
     fi
 
-    # Check if hostname already exists in nixosConfigurations block
-    if grep -Eq "(^|[^a-zA-Z0-9_])$hostname[[:space:]]*=[[:space:]]*mkNixosSystem" "$FLAKE_DIR/hosts/default.nix"; then
+    # Check if hostname already exists in nixosConfigurations block (quoted or unquoted)
+    if grep -Eq "(^|[^A-Za-z0-9_])$hostname[[:space:]]*=[[:space:]]*mkNixosSystem" "$FLAKE_DIR/hosts/default.nix" \
+       || grep -Fq '"'$hostname'" = mkNixosSystem' "$FLAKE_DIR/hosts/default.nix"; then
         log "Host $hostname already exists in flake configuration"
         return
     fi
@@ -752,7 +753,7 @@ update_flake_config() {
                 # If this line closes the nixosConfigurations block (brace == 0 after processing),
                 # inject our host before printing the closing line
                 if (brace == 0) {
-                    print "    " hostname " = mkNixosSystem {"
+                    print "    \"" hostname "\" = mkNixosSystem {"
                     print "      hostname = \"" hostname "\";"
                     print "      system = \"x86_64-linux\";"
                     print "      modules = [nixosModules homeModules];"
@@ -1139,30 +1140,42 @@ setup_user() {
 # Validate hostname
 validate_hostname() {
     local hostname="$1"
-    
-    # Check hostname format
-    if [[ ! "$hostname" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$ ]] && [[ ${#hostname} -gt 1 ]]; then
-        if [[ ${#hostname} -eq 1 ]] && [[ ! "$hostname" =~ ^[a-zA-Z0-9]$ ]]; then
-            error "Invalid hostname format: $hostname"
-        fi
+
+    # Disallow empty and KEY=VALUE patterns passed as positional args
+    if [[ -z "$hostname" ]]; then
+        error "Hostname cannot be empty"
     fi
-    
+    if [[ "$hostname" == *"="* ]]; then
+        error "Invalid hostname '$hostname'. To set env vars, prefix them: VAR=VALUE ./install.sh [hostname] [disk]"
+    fi
+
+    # Enforce valid chars: letters, digits, hyphens; must start/end alphanumeric
+    if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]]; then
+        error "Invalid hostname format: $hostname (use letters, digits, hyphens; must start/end with alphanumeric)"
+    fi
+
     # Check hostname length
     if [[ ${#hostname} -gt 63 ]]; then
         error "Hostname too long (max 63 characters): $hostname"
     fi
-    
-    if [[ ${#hostname} -eq 0 ]]; then
-        error "Hostname cannot be empty"
-    fi
-    
+
     log "Hostname validation passed: $hostname"
 }
 
 # Main installation process
 main() {
-    local hostname="${1:-$DEFAULT_HOSTNAME}"
-    local target_disk="${2:-}"
+    # Sanitize accidental KEY=VALUE tokens passed positionally
+    local _args=()
+    for _a in "$@"; do
+        if [[ "$_a" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+            warn "Ignoring positional token '$_a'. To set env vars, prefix them before the command."
+            continue
+        fi
+        _args+=("$_a")
+    done
+
+    local hostname="${_args[0]:-$DEFAULT_HOSTNAME}"
+    local target_disk="${_args[1]:-}"
     
     log "Starting Snowflake NixOS installation..."
     log "Hostname: $hostname"
