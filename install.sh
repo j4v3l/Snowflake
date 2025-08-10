@@ -801,21 +801,57 @@ setup_flake_integration() {
     cd /etc/nixos
 
     # Initialize/lock flake without leaking HOME from the caller
-    if ! sudo nix --extra-experimental-features 'nix-command flakes' flake lock; then
+    if ! sudo -H nix --extra-experimental-features 'nix-command flakes' flake lock; then
         error "Failed to initialize flake in /etc/nixos"
     fi
     
     # Verify flake is working
     log "Verifying flake configuration..."
-    if sudo nix --extra-experimental-features 'nix-command flakes' flake show . | grep -q "nixosConfigurations\.$hostname"; then
-        log "✅ Flake contains $hostname configuration"
+    local _flake_tmp
+    _flake_tmp=$(mktemp)
+    if sudo -H nix --extra-experimental-features 'nix-command flakes' flake show . > "$_flake_tmp" 2>/dev/null; then
+        if grep -q "nixosConfigurations\.$hostname" "$_flake_tmp"; then
+            log "✅ Flake contains $hostname configuration"
+        else
+            warn "⚠️  $hostname configuration not found in flake"
+            log "Available configurations:"
+            sed -n '/nixosConfigurations/,$p' "$_flake_tmp" | head -n 30 || true
+        fi
     else
-        warn "⚠️  $hostname configuration not found in flake"
-        log "Available configurations:"
-        sudo nix --extra-experimental-features 'nix-command flakes' flake show . | grep "nixosConfigurations" -A 10 || true
+        warn "⚠️  Failed to evaluate flake in /etc/nixos"
     fi
+    rm -f "$_flake_tmp" 2>/dev/null || true
     
     success "Flake integration configured - system will use /etc/nixos flake"
+}
+
+# In rebuild mode, disable bootloader installation by injecting a small module into the
+# copied flake at /etc/nixos for curated hosts (so bootloader checks do not fail when /boot isn't mounted).
+disable_bootloader_in_rebuild() {
+    local hostname="$1"
+    local host_dir="/etc/nixos/hosts/$hostname"
+    local host_default="$host_dir/default.nix"
+    local overlay="$host_dir/_reinstall-disable-boot.nix"
+
+    [[ -f "$host_default" ]] || return 0
+
+    sudo mkdir -p "$host_dir"
+    if [[ ! -f "$overlay" ]]; then
+        sudo tee "$overlay" > /dev/null <<'EOF'
+{ lib, ... }: {
+  boot.loader.systemd-boot.enable = lib.mkForce false;
+  boot.loader.grub.enable = lib.mkForce false;
+  boot.loader.generic-extlinux-compatible.enable = lib.mkForce false;
+}
+EOF
+    fi
+
+    # If the overlay isn't imported yet, append it to the imports list
+    if ! grep -q "_reinstall-disable-boot\.nix" "$host_default"; then
+        sudo cp "$host_default" "$host_default.backup.$(date +%Y%m%d_%H%M%S)"
+        # Insert after the first 'imports = [' occurrence
+        sudo sed -i '/imports[[:space:]]*=[[:space:]]*\[/a\    .\/_reinstall-disable-boot.nix' "$host_default"
+    fi
 }
 
 # Partition and format disks
@@ -975,10 +1011,10 @@ rebuild_nixos() {
     cd /etc/nixos || error "Failed to change to /etc/nixos directory"
 
     # Use the flake from /etc/nixos directly
-    if ! sudo nixos-rebuild switch --flake ".#$hostname" --option experimental-features 'nix-command flakes'; then
+    if ! sudo -H nixos-rebuild switch --flake ".#$hostname" --option experimental-features 'nix-command flakes'; then
         warn "Flake rebuild failed, trying with explicit path..."
         # Try with explicit path as fallback
-        if ! sudo nixos-rebuild switch --flake "/etc/nixos#$hostname" --option experimental-features 'nix-command flakes'; then
+    if ! sudo -H nixos-rebuild switch --flake "/etc/nixos#$hostname" --option experimental-features 'nix-command flakes'; then
             error "NixOS configuration rebuild failed with both methods. Check the above output for specific errors."
         fi
     fi
@@ -1023,7 +1059,7 @@ rebuild_nixos() {
         done
     fi
     if command -v nix-env &> /dev/null; then
-        sudo nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -3 | while read -r line; do
+        sudo -H nix-env --list-generations --profile /nix/var/nix/profiles/system | tail -3 | while read -r line; do
             log "  $line"
         done
     fi
@@ -1243,6 +1279,8 @@ main() {
     if [[ "$reinstall_mode" == "1" ]]; then
         log "Step 11.5: Setting up flake integration for existing system..."
         setup_flake_integration "$hostname"
+    log "Step 11.6: Disabling bootloader installation for rebuild mode..."
+    disable_bootloader_in_rebuild "$hostname"
     fi
     
     # Install or rebuild system
