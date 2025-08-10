@@ -165,6 +165,62 @@ detect_storage() {
     fi
 }
 
+# Attempt to auto-repair corrupted host entries in hosts/default.nix
+# Specifically removes entries where the attribute key contains an '=' before mkNixosSystem,
+# e.g., 'SKIP_DRM_DETECTION=1 = mkNixosSystem { ... };'
+attempt_repair_flake_hosts_file() {
+    local file="$FLAKE_DIR/hosts/default.nix"
+    [[ -f "$file" ]] || return 1
+
+    # Find suspicious lines (KEY=NUMBER = mkNixosSystem)
+    local matches
+    matches=$(grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[0-9]+[[:space:]]*=\s*mkNixosSystem\s*\{' "$file" || true)
+    if [[ -z "$matches" ]]; then
+        return 1
+    fi
+
+    warn "Detected corrupted host entries in $file:"; echo "$matches" | sed 's/^/  -> /'
+
+    if [[ "${SKIP_CONFIRMATION:-}" != "1" ]]; then
+        read -p "Attempt to auto-repair by removing these entries? (y/N): " -n 1 -r; echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
+    sudo cp "$file" "$file.backup.$(date +%Y%m%d_%H%M%S)"
+
+    # Build an awk script to skip from each matched start line until the closing '};'
+    # This is a conservative heuristic based on typical formatting of mkNixosSystem blocks.
+    local start_lines
+    start_lines=$(echo "$matches" | cut -d: -f1 | tr '\n' ' ')
+
+    awk -v starts="$start_lines" '
+        BEGIN {
+            n=split(starts, s, " ")
+            for(i=1;i<=n;i++){ if (s[i] != "") skip_start[s[i]] = 1 }
+        }
+        {
+            line_no = NR
+            if (skip) {
+                # End skip when we hit a line containing only "};" or a closing that ends the block
+                if ($0 ~ /^[[:space:]]*};[[:space:]]*$/) {
+                    skip = 0
+                }
+                next
+            }
+            if (skip_start[line_no]) {
+                skip = 1
+                next
+            }
+            print $0
+        }
+    ' "$file" | sudo tee "$file" > /dev/null
+
+    success "Auto-repair applied to $file (backup created)."
+    return 0
+}
+
 # Detect CPU vendor
 detect_cpu() {
     log "Detecting CPU..."
@@ -903,7 +959,15 @@ setup_disks() {
     # Pre-validate flake host to fail fast with actionable error if broken
     log "Validating flake host '.#$hostname' before disko..."
     if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
-        error "Flake evaluation failed for host '$hostname'.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+        warn "Flake evaluation failed for host '$hostname'. Attempting auto-repair..."
+        if attempt_repair_flake_hosts_file; then
+            log "Retrying flake evaluation after repair..."
+            if ! nix --extra-experimental-features 'nix-command flakes' flake show ".#$hostname" >/dev/null 2>&1; then
+                error "Flake evaluation still failing after repair.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+            fi
+        else
+            error "Flake evaluation failed for host '$hostname'.\nRun: nix --extra-experimental-features 'nix-command flakes' flake show . | cat\nand ensure 'hosts/default.nix' has no invalid entries. If you see lines like 'SKIP_DRM_DETECTION=1 = mkNixosSystem', restore the file (git checkout -- hosts/default.nix) and rerun."
+        fi
     fi
     
     # Run disko with timeout and better error handling
