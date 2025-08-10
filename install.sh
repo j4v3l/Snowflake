@@ -118,10 +118,10 @@ check_prerequisites() {
             return 0
         fi
 
-        # Detect lines where an unquoted attribute key contains '=' before mkNixosSystem
-        # Example of corruption: SKIP_DRM_DETECTION=1 = mkNixosSystem {
+        # Detect lines with two '=' before mkNixosSystem (e.g., 'SKIP_DRM_DETECTION=1 = mkNixosSystem {')
+        # This is a robust, simple heuristic that avoids complex character classes.
         local bad_lines
-        bad_lines=$(grep -nE '^[[:space:]]*[^"{[:space:}][^[:space:}]*=[[:space:]]*mkNixosSystem' "$file" | grep '=') || true
+        bad_lines=$(grep -nE '^[[:space:]]*[^#\"]*=[^=]*=[[:space:]]*mkNixosSystem' "$file" || true)
         if [[ -n "$bad_lines" ]]; then
             echo -e "\n$bad_lines" | sed 's/^/  -> /'
             error "Invalid attribute key detected in $file (contains '=' before mkNixosSystem).\nThis likely happened because a KEY=VALUE token was passed as a positional argument.\nFix: restore the file (e.g., git checkout -- hosts/default.nix) or remove the broken stanza, then rerun using VAR=VALUE ./install.sh [hostname] [disk]."
