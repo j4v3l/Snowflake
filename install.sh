@@ -799,22 +799,20 @@ setup_flake_integration() {
     # Initialize the flake in /etc/nixos
     log "Initializing flake in /etc/nixos..."
     cd /etc/nixos
-    
-    # Ensure experimental features are enabled for this operation
-    export NIX_CONFIG="experimental-features = nix-command flakes"
-    
-    if ! sudo -E nix flake lock; then
+
+    # Initialize/lock flake without leaking HOME from the caller
+    if ! sudo nix --extra-experimental-features 'nix-command flakes' flake lock; then
         error "Failed to initialize flake in /etc/nixos"
     fi
     
     # Verify flake is working
     log "Verifying flake configuration..."
-    if sudo -E nix flake show . | grep -q "$hostname"; then
+    if sudo nix --extra-experimental-features 'nix-command flakes' flake show . | grep -q "nixosConfigurations\.$hostname"; then
         log "✅ Flake contains $hostname configuration"
     else
         warn "⚠️  $hostname configuration not found in flake"
         log "Available configurations:"
-        sudo -E nix flake show . | grep "nixosConfigurations" -A 10
+        sudo nix --extra-experimental-features 'nix-command flakes' flake show . | grep "nixosConfigurations" -A 10 || true
     fi
     
     success "Flake integration configured - system will use /etc/nixos flake"
@@ -972,18 +970,15 @@ rebuild_nixos() {
     
     # Rebuild and switch to the new configuration
     log "Running: sudo nixos-rebuild switch --flake \"/etc/nixos#$hostname\""
-    
+
     # Change to /etc/nixos to ensure we're using the copied flake
     cd /etc/nixos || error "Failed to change to /etc/nixos directory"
-    
-    # Ensure experimental features are enabled
-    export NIX_CONFIG="experimental-features = nix-command flakes"
-    
+
     # Use the flake from /etc/nixos directly
-    if ! sudo -E nixos-rebuild switch --flake ".#$hostname"; then
+    if ! sudo nixos-rebuild switch --flake ".#$hostname" --option experimental-features 'nix-command flakes'; then
         warn "Flake rebuild failed, trying with explicit path..."
         # Try with explicit path as fallback
-        if ! sudo -E nixos-rebuild switch --flake "/etc/nixos#$hostname"; then
+        if ! sudo nixos-rebuild switch --flake "/etc/nixos#$hostname" --option experimental-features 'nix-command flakes'; then
             error "NixOS configuration rebuild failed with both methods. Check the above output for specific errors."
         fi
     fi
@@ -1023,7 +1018,7 @@ rebuild_nixos() {
     # Show system generations
     log "System generations (last 3):"
     if command -v nixos-rebuild &> /dev/null; then
-        nixos-rebuild list-generations | tail -3 | while read -r line; do
+        nixos-rebuild list-generations 2>/dev/null | tail -3 | while read -r line; do
             log "  $line"
         done
     fi
@@ -1073,7 +1068,7 @@ rebuild_nixos() {
     
     # Most importantly: Check if the system will use our flake on next rebuild
     log "- Testing flake resolution:"
-    if cd /etc/nixos && nix flake show 2>/dev/null | head -5; then
+    if cd /etc/nixos && nix --extra-experimental-features 'nix-command flakes' flake show >/dev/null 2>&1; then
         log "  ✅ Flake is valid and accessible"
     else
         log "  ⚠️  Flake may not be properly accessible"
